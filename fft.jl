@@ -162,6 +162,8 @@ function ifft(x::AbstractVector)
         end
     end
 
+    # In-place division to avoid allocation
+    y ./= N
     return y
 end
 
@@ -216,5 +218,5 @@ function fftnshift(A::AbstractArray)
 end
 function ifftnshift(A::AbstractArray)
     B = copy(A)
-    return ifftshift(ifft(ifftshift(B)))./(reduce(*,size(B)))
+    return ifftshift(ifft(ifftshift(B)))#./(reduce(*,size(B)))
 end
