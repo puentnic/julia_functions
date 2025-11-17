@@ -206,17 +206,22 @@ function fftshift(x::AbstractArray)
     shifts = map(s -> div(s, 2), size(x))    
     return circshift(x, shifts)
 end
+function ifftshift(x::AbstractArray)
+    # Calculate the shift amount for each dimension
+    shifts = map(s -> -div(s, 2), size(x))    
+    return circshift(x, shifts)
+end
 function ifftshift!(x::AbstractArray)
     shifts = map(s -> -div(s, 2), size(x))
     return circshift(x, shifts)
 end
 
 
-function fftnshift(A::AbstractArray)
-    B = copy(A)
-    return fftshift(fft(fftshift(B)))
+function fft2(A::AbstractArray)
+    B = complex.(copy(A))
+    return fftshift(fft(ifftshift(B)))
 end
-function ifftnshift(A::AbstractArray)
-    B = copy(A)
-    return ifftshift(ifft(ifftshift(B)))#./(reduce(*,size(B)))
+function ifft2(A::AbstractArray)
+    B = complex.(copy(A))
+    return fftshift(ifft(ifftshift(B)))#./(reduce(*,size(B)))
 end
