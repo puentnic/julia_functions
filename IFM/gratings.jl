@@ -1,4 +1,4 @@
-function transmission_func(g::AbstractMatrix, aperature::Union{AbstractMatrix, Bool}=true; 
+function transmission(g::AbstractMatrix, aperature::Union{AbstractMatrix, Bool}=true; 
             σU::Real=π/21, α::Real=0.008)
     # mask selection: matrix aperture, disk when true, or no mask when false
     mask = aperature isa AbstractMatrix ? aperature :
@@ -7,6 +7,14 @@ function transmission_func(g::AbstractMatrix, aperature::Union{AbstractMatrix, B
 
     # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
     t = @. cis((σU + 1im * α) * g / 10 * mask) * mask
+    return t
+end
+
+function transmission(g::AbstractVector; 
+            σU::Real=π/21, α::Real=0.008)
+
+    # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
+    t = @. cis((σU + 1im * α) * g / 10 )
     return t
 end
 
@@ -64,6 +72,30 @@ function blazed_grating(N, p, x_apex; thickness=500, mill_depth=208)
     g1 = @. g1 * mill_depth + d0
     g2 = repeat(g1', N, p)
     return g2
+end
+
+function blazed_grating_1d(N, p, x_apex; thickness=500, mill_depth=208)
+    """
+        thickness = 500 #Angstroms
+        mill_depth = 208 #Angstroms
+    """
+    @assert N % p == 0 "p must divide N"
+    
+    xs = collect(Int, 0:1:(N÷p)-1)                # N/p points, endpoint 1 is excluded
+    x_apex = floor(Int, x_apex * xs[end])
+    d0 = thickness - mill_depth
+    g1 = zeros(Float64, N÷p)
+    for (i,x) in enumerate(xs)
+        if x <= x_apex
+            g1[i] = x/(x_apex+1)
+        else
+            x_shifted = x - (x_apex + 1)
+            g1[i] = -x_shifted/(xs[end] - x_apex) + oneunit(Int)
+        end
+    end
+    g1 .= g1 .* mill_depth .+ d0
+    g1 = repeat(g1, p)
+    return g1
 end
 
 
