@@ -1,3 +1,15 @@
+function transmission_func(g::AbstractMatrix, aperature::Union{AbstractMatrix, Bool}=true; 
+            σU::Real=π/21, α::Real=0.008)
+    # mask selection: matrix aperture, disk when true, or no mask when false
+    mask = aperature isa AbstractMatrix ? aperature :
+           aperature ? centered_disks(size(g,1)) :
+           ones(eltype(g), size(g))
+
+    # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
+    t = @. cis((σU + 1im * α) * g / 10 * mask) * mask
+    return t
+end
+
 function blazed_grating(N, p; thickness=500, mill_depth=208)
     """
         thickness = 500 #Angstroms
