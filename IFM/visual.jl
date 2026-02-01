@@ -4,434 +4,134 @@
 using Markdown
 using InteractiveUtils
 
-# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
-macro bind(def, element)
-    #! format: off
-    return quote
-        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
-        local el = $(esc(element))
-        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
-        el
-    end
-    #! format: on
-end
-
-# ╔═╡ 815f51f6-c0c1-424f-bab3-e9dba64a0986
+# ╔═╡ 5fb4f40e-cb55-11f0-2252-7f165625f8d1
 begin
 	using Plots
-	using PlutoUI
-	using LaTeXStrings
-	using Statistics
-	using Base.Threads
 	using LinearAlgebra
-
-	include("../fft.jl")
-	include("gratings.jl")
-	include("zoom.jl")
 end
 
-# ╔═╡ 997a5d95-418f-40c4-8089-94bdfcd95487
-function blazed_grating_1d(N, p, x_apex; thickness=500, mill_depth=208)
-    """
-        thickness = 500 #Angstroms
-        mill_depth = 208 #Angstroms
-    """
-    @assert N % p == 0 "p must divide N"
-    
-    xs = collect(Int, 0:1:(N÷p)-1)                # N/p points, endpoint 1 is excluded
-    x_apex = floor(Int, x_apex * xs[end])
-    d0 = thickness - mill_depth
-    g1 = zeros(Float64, N÷p)
-    for (i,x) in enumerate(xs)
-        if x <= x_apex
-            g1[i] = x/(x_apex+1)
-        else
-            x_shifted = x - (x_apex + 1)
-            g1[i] = -x_shifted/(xs[end] - x_apex) + oneunit(Int)
-        end
-    end
-    g1 .= g1 .* mill_depth .+ d0
-    g1 = repeat(g1, p)
-    return g1
-end
-
-# ╔═╡ 58c2785d-f574-47b6-9da2-5ede814feae6
-function transmission_func(g::AbstractVector, 
-						   aperature::Union{AbstractMatrix, Bool}=true; 
-            σU::Real=π/21, α::Real=0.008)
-    # mask selection: matrix aperture, disk when true, or no mask when false
-    mask = aperature isa AbstractMatrix ? aperature :
-           aperature ? centered_disks(size(g,1)) :
-           ones(eltype(g), size(g))
-
-    # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
-    t = @. cis((σU + 1im * α) * g / 10 * mask) * mask
-    return t
-end
-
-# ╔═╡ 78d01afd-cca8-4056-8e0a-728105a0050d
+# ╔═╡ f9c91e1c-bbb1-4b22-869d-833cfa608379
 begin
-	N = 2^10
-	ctr = N ÷ 2 + 1
-	p = 1
-	N_mill_depths = 25
-	t_2nd = ones(ComplexF64, N)
-	grating_1st_mill_depths = collect(range(50, 200, length = N_mill_depths))
-	phase_shifts = collect(range(0, 2π, length = 20))
-	x_apexes = collect(range(0.0, 1.0, length = 10))
-	prod_sums = zeros(Float64,length(phase_shifts), length(x_apexes), N_mill_depths, 		N_mill_depths)
-	ratios = zeros(Float64, length(phase_shifts), length(x_apexes), N_mill_depths, 			N_mill_depths);
-end
-
-# ╔═╡ 5b0a75a9-0944-4e78-8598-38fd4ff84ace
-begin
-	function cross_correlation_FC(c_t3, c_t1, t2, k)::Number
-		@assert length(c_t3) == length(c_t1) "vectors must be same length"
-	    N = length(c_t3)
-	    c_t3_shifted = circshift(c_t3, -k)
-	    prod = @. c_t3_shifted * c_t1 * t2
-		return sum(prod)
+	abstract type OpticalElement end
+	struct Element <: OpticalElement
+	    M::Matrix{Float64}
+	    d::Float64
 	end
-	    
+	function thin_lens(f::T) where {T<:Real}
+    M = [ 1.0   0.0  0.0  0.0
+         -1/f   1.0  0.0  0.0
+          0.0   0.0  1.0  0.0
+          0.0   0.0 -1/f  1.0 ]
+    # lens has no physical propagation length; use 0 or whatever convention
+	    return Element(M, 0.0)
+	end
+	
+	function free_space(d::T) where {T<:Real}
+	    M = [1.0  d    0.0  0.0
+	         0.0  1.0  0.0  0.0
+	         0.0  0.0  1.0  d
+	         0.0  0.0  0.0  1.0]
+	    return Element(M, d)
+	end
+end
+
+# ╔═╡ c5e87d52-de4c-4ce2-a1ff-fecb40de651a
+begin
+	N = 40
+	xs = collect(range(-1, 1, N))
+	ys = collect(range(-1, 1, N))
+	# θs = zeros(length(xs))
+	rs = [
+	    [x, 0.0, y, 0.0]
+	    for x in xs, y in ys
+	    if x^2 + y^2 ≤ 1
+	]
+	
+	# rs_final = similar(rs)
+	println(length(rs))
+	# M = free_space(10)*thin_lens(10)
+	operator = reverse([free_space(10),thin_lens(10),free_space(10),free_space(10),thin_lens(10),free_space(10)])
+	# println(M*rs[1])
+end
+
+# ╔═╡ d5258bac-b762-486f-bc7c-f2ad3564a26b
+function propagate(As::Vector{Element}, states::Vector{<:Vector})
+	# z_points = [A.d for A in As]
+	# z_points = vcat(0.0, z_points)
+	# z_points = [0.0]
+	# for A in As
+	# 	z_points = vcat(z_points, z_points[end]+A.d)
+	# end
+	z_points = vcat(0.0, cumsum([A.d for A in As]))
+	x_points = [Vector{Float64}(undef, length(z_points)) for _ in eachindex(states) ]
+	y_points = [Vector{Float64}(undef, length(z_points)) for _ in eachindex(states) ]
+
 	
 	
+	for (i,state) in enumerate(states)
+		# x_points[i] = [state[1]]
+		# y_points[i] = [state[3]]
+		x_points[i][1] = state[1]
+		y_points[i][1] = state[3]
+		for (j,A) in enumerate(As)
+			state_new = A.M*state
+			# x_points[i] = vcat(x_points[i], state_new[1])
+			# y_points[i] = vcat(y_points[i], state_new[3])
+			x_points[i][j+1] = state_new[1]
+			y_points[i][j+1] = state_new[3]
+			state = state_new
+		end
+	end
+			
 	
-	function ψ_modes_setup(N,p, x_apex ; thickness=500,mill_depths, 			phase_shift=0, mode_blocking=false)
-	    g1st = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[1])
-	    g2nd = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[2])
+	return x_points, y_points, z_points		
+end
+
+# ╔═╡ adbb24b3-333f-4478-9452-f2e92cb6bd6b
+	x_points, y_points, z_points = propagate(operator,rs);
+
+
+# ╔═╡ 64accc5f-a120-4e8e-8601-54736c2545f4
+begin
+	println(size(x_points[1]), size(y_points), size(z_points), "\n" )
+		   # z_points)
+	# plotlyjs()  # or: plotly()
+	plotly()
+	# gr()
+	fig1 = plot()
+
+	for i in eachindex(x_points)
 		
-		g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-        g2nd = circshift(g2nd, g2_shift)
-		
-	    t1st = transmission_func(g1st, false)
-	    t3rd = transmission_func(g2nd, false)
-	    # t1st ./= N
-	    # t3rd ./= N
-	    t1st_fft = fftshift(fft(ifftshift(t1st)))
-	    t3rd_fft = fftshift(fft(ifftshift(t3rd)))
-		c_t3 = t3rd_fft./N
-	
-	    if mode_blocking
-	        mask = collect(1:1:N)
-	        t1st_fft[mask.<ctr] .= 0
-	        # t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	    end
-		t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-
-	        
-	
-	    return t1st_fft, c_t3
+		plot!(fig1, x_points[i], y_points[i], z_points;
+			 color=:green, label="", linewidth=5,
+			 opacity=1.0)
 	end
-end
-
-# ╔═╡ 8e5be95e-270a-4d0d-87cc-da6f51c64b47
-function calculations!(grating_1st_mill_depths, grating_2nd_mill_depths, 
-					  prod_sums, ratios)
-	k = -1
-	for (i, md1) in enumerate(grating_2nd_mill_depths)
-	    for (j, md2) in enumerate(grating_1st_mill_depths)
-	        for (w, ps) in enumerate(phase_shifts)
-	            for (l, xa) in enumerate(x_apexes)
-	                t1st_fft, c_t3 = ψ_modes_setup(N, p, xa; thickness=500, 											mill_depths=(md1, md2), phase_shift=ps, 										mode_blocking=true)    
-	                t_2nd[ctr - k] = cis(ps)    
-	                cc = cross_correlation_FC(c_t3, t1st_fft, t_2nd, k)
-					@assert abs(sum(abs2, t1st_fft) - 1) < 1e-10
-					# @assert abs(sum(abs2, c_t3)      - 1) < 1e-10 "sum(abs2,c_t3)=$(sum(abs2,c_t3))"
-					
-					    # unit_vec = (real(prod_sum) + 1im * imag(prod_sum)) / 				abs(prod_sum)
-	
-					coefficient_selected = 
-						abs2(c_t3[ctr] * t1st_fft[ctr-k] * t_2nd[ctr-k] )
-	
-	                prod_sums[w, l, i, j] = abs2(cc)
-	                ratios[w, l, i, j] = coefficient_selected/abs2(cc)
-	            end
-	        end
-	    end
-	end
-	return nothing
-end
-
-# ╔═╡ a3b7bc29-0941-4d20-ae96-5bb298b23d85
-begin
-	calculations!(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums, ratios)
-end
-
-# ╔═╡ 239c6992-08a4-41d6-81db-e508856a9f80
-function plotting(i,j)
-	fig1 =heatmap(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums[i, j, :, :];
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="3rd Grating Mill Depth (Å)",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)   
-	
-	fig2 = heatmap(grating_1st_mill_depths, grating_1st_mill_depths, (ratios[i, j, :, :]);
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)
-	# plot!(fig2, grating_1st_mill_depths, grating_1st_mill_depths, 
-	#     label="", color=:black
-	# )  
-	 
-	plot(fig1, fig2, layout=(1,2), size=(900,600),
-		title="w/ $(round(phase_shifts[i]/π, digits=2))π phase shift \n and $(round(x_apexes[j]*100, digits=2))% blazed" )
-end
-
-# ╔═╡ ba5236af-6113-49de-8076-6780da204abd
-
-@bind i_slider PlutoUI.Slider(1:1:length(phase_shifts), default=1)
-
-
-# ╔═╡ a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-@bind j_slider PlutoUI.Slider(1:1:length(x_apexes), default=1)
-
-# ╔═╡ 8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-plotting(i_slider, j_slider)
-
-# ╔═╡ e024340e-bd01-4472-8005-7a1dcf8a9306
-function bar_graph(ks, N, p, x_apex, 
-				   phase_shift, mill_depths, 
-				   mode_blocking=true;α=0.008, kwards...)
-	
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	
-	
-	t1 = transmission_func(g1, false; α=α)
-	t3 = transmission_func(g2, false; α=α)
-	
-	# println("real-space: \n",sum(abs2, t1), "\n", sum(abs2, t3))
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-	# println("k-space: \n",sum(abs2, t1st_fft)/N, "\n", sum(abs2, t3rd_fft)/N)
-
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0
-		t1st_fft[mask.>ctr+1] .= 0
-		# println(sum(abs2, t1st_fft))
-		
-	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	# println(sum(abs2, t1st_fft))
-	
-	# println("k-space: \n",sum(abs2, t1st_fft), "\n", sum(abs2, c_t3))
-	
-	t_2nd[ctr+1] = cis(phase_shift)
-	# t_2nd[ctr]
-	
-	ccs = zeros(ComplexF64, length(ks))
-	for (i,w) in enumerate(ks)
-		
-		ccs[i] = cross_correlation_FC(c_t3, t1st_fft, t_2nd, w)
-	end
-	println(sum(abs2.(ccs)))
-	bar(ks, abs2.(ccs); kwards...)
-end
-
-# ╔═╡ db9cf8e6-0810-46c0-8890-3ffd3f648bdf
-
-
-# ╔═╡ dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-@bind phase_slider PlutoUI.Slider(phase_shifts, default=phase_shifts[1])
-
-# ╔═╡ d044989b-06d0-4e7b-a62d-88edc0c46867
-begin
-	ks = collect(-10:1:10)
-	x_apex = 0.5
-	println(phase_slider)
-	bar_graph(ks,N,p,x_apex,phase_slider,[70,190],true; ylims=(0,0.63))
-end
-
-# ╔═╡ 1decf6b8-a62e-494b-9326-225c38b36bb3
-function FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	absorption = 0.008
-	t1 = transmission_func(g1, false, α=absorption)
-	t3 = transmission_func(g2, false, α=absorption)
-	
-
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0	
-		t1st_fft[mask.>ctr+1] .= 0	
-
-	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-
-	return t1st_fft, c_t3, abs.(t1.*c_t3)
-end
-
-# ╔═╡ b618de85-827f-4f86-8939-7e52bc509600
-function FC_matrix(Ms, mill_depths, x_apex)
-
-	c_t1, c_t3, r_prod = FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	c_matrix = Matrix{ComplexF64}(undef, length(Ms), length(Ms))
-
-	
-	for (i,m) in enumerate(Ms)
-		c_t3_shifted = circshift(c_t3, -m)
-		c_matrix[i,:] = c_t3_shifted[Ms.+ctr] .* c_t1[Ms.+ctr] 
-		# c_matrix[i,length(Ms)÷2+1] *= cis(4.29902152596498) 
-	end
-	return c_matrix
-end
-
-# ╔═╡ 0b273ca7-4f99-4db9-91b5-b615ac6ace19
-begin
-	M = 9
-	ctr_M = M÷2 + 1
-	Ms = collect(1:M) .- ctr_M
-	
-	c_matrix = FC_matrix(Ms, [70,190], 0.5)
-	fig_c_matrix = heatmap(Ms, Ms, abs.(c_matrix),
-		   	xticks=(Ms,(Ms)),
-			yticks=(Ms,Ms)
-	)
-	println(sum(abs2,(sum(c_matrix, dims=2))))
-	fig2_c_matrix = bar(Ms, abs2.(sum(c_matrix, dims=2)),
-						xticks=(Ms,Ms),
-					   ylims=(0,0.63)
-					   )
-	plot(fig_c_matrix, fig2_c_matrix, layout=(1,2), size=(900,400))
-end
-
-# ╔═╡ f713a74b-43fd-4721-973e-c21e8d1bacf7
-@bind vec_slider PlutoUI.Slider(1:1:10, default=1)
-
-# ╔═╡ 936d80c4-e14f-4ee5-ab0a-bf7981483bad
-begin
-	result = eigen(c_matrix) 
-
-	println("Eigenvalues:", round.(abs.(result.values), digits=8), "\n", 
-			round.(angle.(result.values), digits=2))
-	println("Eigenvalues:", round.(abs.(result.values[vec_slider]), digits=4), "\n", 
-			round.(angle.(result.values[vec_slider]), digits=2))
-	println("Eigenvectors:")
-	# display(round.(abs.(result.vectors[:,vec_slider]),digits=3))
-	# display(round.(angle.(result.vectors[:,vec_slider]),digits=3))
-	# display(Ms)
+	plot(fig1)
 	
 end
 
-# ╔═╡ 061a0e13-6de3-4484-a227-b7e1656e3744
-begin
-	
-	fig1 = heatmap(Ms.+ctr_M, Ms, abs.(result.vectors), aspect_ratio=1,
-					xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms),
-				  	xlabel="Eigenvector"
-				  )
-	fig2 = heatmap(Ms.+ctr_M, Ms, angle.(result.vectors), aspect_ratio=1,
-				  	xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms)
-				  )
-	plot(fig1, fig1, layout=(1,2), size=(900,500))
-end
+# ╔═╡ 13f7f517-a431-4763-92d1-83fe8b95e082
+# sing GLMakie
 
-# ╔═╡ d59c2734-22aa-4414-8783-ce1b7005bf60
-begin
-	
-	t2_test = ones(ComplexF64, length(Ms))
-	
-	dot_product_λs = zeros(length(phase_shifts), length(Ms))
-	dp_output = zeros(length(phase_shifts))
-	for (i,θ) in enumerate(phase_shifts)
-		t2_test[ctr_M+1] = cis(θ)
-		dot_product =
-			result.vectors*diagm(result.values)*inv(result.vectors)*t2_test
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		dp_output[i] = abs2(sum(dot_product[ctr_M-1,:]))
-		# t2_t)est[ctr_M+1] = cis(θ)
-		# dot_product = sum(
-		# 		result.vectors.*t2_test,dims=1)
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		# dp_output[i] = abs2(sum(dot_product))
-	end
-	# dot_product .*=result.values[1].*result.vectors[1,ctr_M-1]
-	plot(phase_shifts,
-		 dot_product_λs[:,1]
-		)
-	plot!(phase_shifts, 
-		  dot_product_λs[:,end]
-		 )
-	plot!(phase_shifts, 
-		 dp_output
-		 )
-	vline!([1.9841637812146062])
-	
-	
-end
+# x_points, y_points, z_points = propagate(operator, rs)
 
-# ╔═╡ 22274477-32f9-4aff-b410-8e345d0977a6
-F = svd(c_matrix);
+# fig = Figure()
+# ax  = Axis3(fig[1, 1])
 
-# ╔═╡ 12944ad3-df9e-4aaf-8bb9-08c5972145ef
-begin
-	fig1_F = heatmap(Ms, Ms,abs2.(F.U),
-					 colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_F = heatmap(Ms, Ms,log.(1 .+(abs.(diagm(F.S))))
-					)
-	fig3_F = heatmap(Ms, Ms, abs2.(F.Vt),
-					 colorbar=false
-					)
-	println(F.S[1:4])
-	println(F.S[1:4]./F.S[1])
-	plot(fig1_F, fig2_F, fig3_F, layout=(1,3), size=(1200,500))
-end
+# for i in eachindex(x_points)
+#     lines!(ax, x_points[i], y_points[i], z_points; color = :green, transparency = true)
+# end
 
-# ╔═╡ 9d59f49a-2da0-4955-801f-a3c91cdc3576
-F_QR = qr(c_matrix)
-
-# ╔═╡ e69ed969-232c-4f3e-bc26-939afa79f11d
-begin
-	fig1_Fqr = heatmap(Ms, Ms,(abs.(F_QR.Q)),
-					 # colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_Fqr = heatmap(Ms, Ms,(abs.(F_QR.R))
-					)
-	
-	plot(fig1_Fqr, fig2_Fqr, layout=(1,2), size=(1200,500))
-end
+# fig
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
-LaTeXStrings = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
-PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
-LaTeXStrings = "~1.4.0"
 Plots = "~1.41.1"
-PlutoUI = "~0.7.75"
 """
 
 # ╔═╡ 00000000-0000-0000-0000-000000000002
@@ -440,13 +140,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.11.2"
 manifest_format = "2.0"
-project_hash = "77f0f2e262733f86d665b16f9db911d504877d02"
-
-[[deps.AbstractPlutoDingetjes]]
-deps = ["Pkg"]
-git-tree-sha1 = "6e1d2a35f2f90a4bc7c2ed98079b2ba09c35b83a"
-uuid = "6e696c72-6542-2067-7265-42206c756150"
-version = "1.3.2"
+project_hash = "1c96723d311fd79f5204a4f00eef5fdaec806baf"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -705,24 +399,6 @@ git-tree-sha1 = "f923f9a774fcf3f5cb761bfa43aeadd689714813"
 uuid = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
 version = "8.5.1+0"
 
-[[deps.Hyperscript]]
-deps = ["Test"]
-git-tree-sha1 = "179267cfa5e712760cd43dcae385d7ea90cc25a4"
-uuid = "47d2ed2b-36de-50cf-bf87-49c2cf4b8b91"
-version = "0.0.5"
-
-[[deps.HypertextLiteral]]
-deps = ["Tricks"]
-git-tree-sha1 = "7134810b1afce04bbc1045ca1985fbe81ce17653"
-uuid = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
-version = "0.9.5"
-
-[[deps.IOCapture]]
-deps = ["Logging", "Random"]
-git-tree-sha1 = "0ee181ec08df7d7c911901ea38baf16f755114dc"
-uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
-version = "1.0.0"
-
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
@@ -906,11 +582,6 @@ git-tree-sha1 = "f00544d95982ea270145636c181ceda21c4e2575"
 uuid = "e6f89c97-d47a-5376-807f-9c37f3926c36"
 version = "1.2.0"
 
-[[deps.MIMEs]]
-git-tree-sha1 = "c64d943587f7187e751162b3b84445bbbd79f691"
-uuid = "6c6e2e6c-3030-632d-7369-2d6c69616d65"
-version = "1.1.0"
-
 [[deps.MacroTools]]
 git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
 uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
@@ -1063,12 +734,6 @@ version = "1.41.1"
     IJulia = "7073ff75-c697-5162-941a-fcdaad2a7d2a"
     ImageInTerminal = "d8c32880-2388-543b-8c61-d9f865259254"
     Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
-
-[[deps.PlutoUI]]
-deps = ["AbstractPlutoDingetjes", "Base64", "ColorTypes", "Dates", "Downloads", "FixedPointNumbers", "Hyperscript", "HypertextLiteral", "IOCapture", "InteractiveUtils", "JSON", "Logging", "MIMEs", "Markdown", "Random", "Reexport", "URIs", "UUIDs"]
-git-tree-sha1 = "db8a06ef983af758d285665a0398703eb5bc1d66"
-uuid = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
-version = "0.7.75"
 
 [[deps.PrecompileTools]]
 deps = ["Preferences"]
@@ -1271,11 +936,6 @@ version = "1.11.0"
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 version = "0.11.3"
-
-[[deps.Tricks]]
-git-tree-sha1 = "311349fd1c93a31f783f977a71e8b062a57d4101"
-uuid = "410a4b4d-49e4-4fbc-ab6d-cb71b17b3775"
-version = "0.1.13"
 
 [[deps.URIs]]
 git-tree-sha1 = "bef26fb046d031353ef97a82e3fdb6afe7f21b1a"
@@ -1570,31 +1230,12 @@ version = "1.9.2+0"
 """
 
 # ╔═╡ Cell order:
-# ╠═815f51f6-c0c1-424f-bab3-e9dba64a0986
-# ╟─997a5d95-418f-40c4-8089-94bdfcd95487
-# ╟─58c2785d-f574-47b6-9da2-5ede814feae6
-# ╠═5b0a75a9-0944-4e78-8598-38fd4ff84ace
-# ╠═78d01afd-cca8-4056-8e0a-728105a0050d
-# ╟─8e5be95e-270a-4d0d-87cc-da6f51c64b47
-# ╠═a3b7bc29-0941-4d20-ae96-5bb298b23d85
-# ╠═239c6992-08a4-41d6-81db-e508856a9f80
-# ╠═ba5236af-6113-49de-8076-6780da204abd
-# ╠═a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-# ╠═8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-# ╠═e024340e-bd01-4472-8005-7a1dcf8a9306
-# ╠═d044989b-06d0-4e7b-a62d-88edc0c46867
-# ╠═db9cf8e6-0810-46c0-8890-3ffd3f648bdf
-# ╠═dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-# ╠═1decf6b8-a62e-494b-9326-225c38b36bb3
-# ╠═b618de85-827f-4f86-8939-7e52bc509600
-# ╠═0b273ca7-4f99-4db9-91b5-b615ac6ace19
-# ╠═f713a74b-43fd-4721-973e-c21e8d1bacf7
-# ╠═936d80c4-e14f-4ee5-ab0a-bf7981483bad
-# ╠═061a0e13-6de3-4484-a227-b7e1656e3744
-# ╠═d59c2734-22aa-4414-8783-ce1b7005bf60
-# ╠═22274477-32f9-4aff-b410-8e345d0977a6
-# ╠═12944ad3-df9e-4aaf-8bb9-08c5972145ef
-# ╠═9d59f49a-2da0-4955-801f-a3c91cdc3576
-# ╠═e69ed969-232c-4f3e-bc26-939afa79f11d
+# ╠═5fb4f40e-cb55-11f0-2252-7f165625f8d1
+# ╠═f9c91e1c-bbb1-4b22-869d-833cfa608379
+# ╠═c5e87d52-de4c-4ce2-a1ff-fecb40de651a
+# ╠═d5258bac-b762-486f-bc7c-f2ad3564a26b
+# ╠═adbb24b3-333f-4478-9452-f2e92cb6bd6b
+# ╠═64accc5f-a120-4e8e-8601-54736c2545f4
+# ╠═13f7f517-a431-4763-92d1-83fe8b95e082
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002

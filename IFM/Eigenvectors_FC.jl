@@ -25,77 +25,230 @@ begin
 	using PlutoUI
 end
 
-# ╔═╡ f66699e8-42c6-4050-b151-d09488d18c7d
-begin
-	N = 15
-	M = 10
-	ctr_n = N ÷ 2 + 1
-	ctr_m = M ÷ 2 + 1
-	ns = (1:N) .- ctr_n
-	ms = (1:M) .- ctr_m  # Generates indices like -5, -4, ..., 0, ..., 4
-	
-	# Create symbolic variables c_n dynamically
-	c_vec_3 = Symbolics.variables(:c³, ns)
-	c_vec_1 = Symbolics.variables(:c¹, ns)
-	# c_vec_scale = @. ns == 0 ? 1 : 1/abs(ns)
-	c_vec_scale = [
-		n==0 ? 1 : max(1/abs(π*(n-0.25)), 1/abs(π*(n+0.25))) for n in ns
-	]
-	# c_vec_scale = [
-	# 	n==0 ? 1 : 1/abs(π*n) for n in ns
-	# ]
-	heaviside_mask = [
-		m>=0 ? 1 : 0 for m in ms
-	]
-	
-	c_mat = Matrix{Symbolics.Num}(undef, M, M)
-	c_mat_scale = Matrix{Float64}(undef, M, M)
-	for (i,m) in enumerate(ms)
-		c_3_shifted = circshift(c_vec_3, -m)
-		c_scale_shifted = circshift(c_vec_scale, -m)
-		c_mat[i,:] = c_3_shifted[ms.+ctr_n] .* c_vec_1[ms.+ctr_n] 
-		c_mat_scale[i,:] = c_scale_shifted[ms.+ctr_n] .* c_vec_scale[ms.+ctr_n] .* heaviside_mask
-	end
-	c_sub =  Symbolics.variables(:x, ms)
-	
-	# Verify c_0 is at the correct location
-	println("Center element (index $ctr_n): ", c_vec_3[ctr_n])
-	println(c_vec_3)
-	mask = collect(-2:2) .+ ctr_m
-	display(c_mat[mask, mask])
-	# print("Full vector: ", latexify(c_sub))
-	# print(latexify(@variables Symbol("d_2",1)))
-end
+# ╔═╡ 71a8bd86-671b-4b3b-a544-60996f228312
+md"""
+The function circular convolution generates the matrix $c_{j,k}$ from 
 
-# ╔═╡ 6e9b509a-131d-4e17-91c0-b6eb95b5aa73
+"""
+
+# ╔═╡ b93d750d-f389-42f8-8ca5-25b29df4d344
 md"""
 $\begin{equation}
-\left[
-\begin{array}{c}
-\mathtt{x{_{- 5}}} \\
-\mathtt{x{_{- 4}}} \\
-\mathtt{x{_{- 3}}} \\
-\mathtt{x{_{- 2}}} \\
-\mathtt{x{_{- 1}}} \\
-\mathtt{x{_0}} \\
-\mathtt{x{_1}} \\
-\mathtt{x{_2}} \\
-\mathtt{x{_3}} \\
-\mathtt{x{_4}} \\
-\end{array}
-\right]
+	\psi_k = \sum_{j=-\infty}^\infty \, c^{\{t_3\}}_{j+k} 	c^{\{t_1\}}_{j} 
 \end{equation}$
 """
 
+# ╔═╡ bcf9dca9-b58c-4e1f-90fa-ed97ad92a259
+begin
+	N = 25
+	M = 9
+	ctr_n = N ÷ 2 + 1
+	ctr_m = M ÷ 2 + 1 - 1
+	ns = collect(1:N) .- ctr_n
+	ms = collect(1:M) .- ctr_m  # Generates indices like -5, -4, ..., 0, ..., 4
+	
+	# Create symbolic variables c_n dynamically
+	c_3 = Symbolics.variables(:c³, ns)
+	c_1 = Symbolics.variables(:c¹, ns)
+	κ = π/21 + 1im*0.008
+	# κ = 1
+ 	@variables d1, d2, a, h, κr, κ
+	c_1 = Vector{Complex{Symbolics.Num}}(undef, length(ns))
+	c_3 = Vector{Complex{Symbolics.Num}}(undef, length(ns))
+	import Base: sin, sinc
+	sin(x::Number, y::Number) = 
+		sin(x)*cosh(y) + 1im*cos(x)*sinh(y)
+	sinc(x::Number,y::Number) = 
+		sin(π*x,π*y) / (π*(x+1im*y)) 
+	cispi(x) = cos(π*x) + 1im * sin(π*x)
+	
+	# function asaw_helper(arg)
+		
+	# 	return cis(-π*arg) * sinc(real(arg),imag(arg))
+	# end
+	# function asawtooth(κ, h, d, a, n)
+	# 	β1 = κ*d/(2*π*a)
+	# 	β2 = κ*d/(2*π*(1-a))
+	# 	coefficient_1 = a*cis(κ*(h-d))
+	# 	arg_1 = a*(n-β1)
+	# 	coefficient_2 = (1-a)*cis(κ*h) * cis(-n*2*π*a)
+	# 	arg_2 = (1-a)*(n+β2)
+	# 	return coefficient_1*asaw_helper(arg_1) + coefficient_2*asaw_helper(arg_2)
+	# end
+	function asawtooth(κ, h, d, a, n; 
+					   phase_shift::Bool=false, mode_block::Bool=false)
+		β1 = κ*d/(2*π*a)
+		β2 = κ*d/(2*π*(1-a))
+		coefficient_1 = cis(κ*(h-d))*cispi(-a*(n-β1))
+		arg = a*(n-β1)
+		coefficient_2 = a*(β1+β2)/(n+β2)
+
+		if phase_shift
+			x0 = 2*π*(1-a)
+			coefficient_1 *= cis(-n*x0) 
+		end
+		
+		heaviside_mask = (n<0 && mode_block) ? 0 : 1 
+		
+		
+		return coefficient_1*coefficient_2*sinc(real(arg),imag(arg)) * heaviside_mask
+	end
+	
+	for (i,n) in enumerate(ns)
+		c_1[i] = asawtooth(κ,h,d1,a,n;
+						   phase_shift = true, mode_block=true)
+		c_3[i] = asawtooth(κ,h,d2,a,n)
+	end
+	# c_1 = simplify.(c_1)
+	# c_3 = simplify.(c_3)
+	c_1 ./= sqrt(sum(abs2, c_1))
+	# c_1 = simplify.(c_1)
+
+	
+	θs = Symbolics.variables(:θ, ns)
+	θs_hessian = θs[collect(-1:1) .+ ctr_n .+ 1]
+	t_2 = [cis(θ) for θ in θs]
+	
+	
+
+	∇_θ = [Differential(θ) for θ in θs]
+	# use Sumbolics.hessian(expression, vars; simplify = true)
+	
+	# c_vec_scale = @. ns == 0 ? 1 : 1/abs(ns)
+	c_scale = [
+		n==0 ? 1 : max(1/abs(π*(n-0.25)), 1/abs(π*(n+0.25))) for n in ns
+	];
+	# display(∇_θ)
+end
+
+# ╔═╡ 2b327feb-b550-4f29-b5e1-f96afe9f1b46
+function circular_convolution(ms::Vector{<:Int}, A::Vector, 
+							  B::Vector, mode_block::Bool=true)
+	
+	sel = @. ms + ctr_n
+	B_sel = B[sel]
+	if mode_block
+		heaviside_mask = [
+			m>=0 ? 1 : 0 for m in ms
+			]
+	else
+		heaviside_mask = ones(length(Ms))
+	end
+
+	
+
+	
+	T = promote_type(eltype(A), eltype(B), eltype(heaviside_mask))
+	mat = Matrix{Complex{Symbolics.Num}}(undef, length(ms), length(ms))
+	@inbounds for (i,m) in enumerate(ms)
+		idx = sel .+ m
+		mat[i,:] = A[idx] .* B_sel .* heaviside_mask
+	end
+
+	return mat
+end
+
+# ╔═╡ bf02d327-64f6-434f-bba3-fd8bfeef963e
+# begin
+# 	i = ctr_n  # some index
+# 	@show c_1[i]
+# 	@show Symbolics.substitute(c_1[i], subs_vals)
+# end
+
+# ╔═╡ 86f16c9f-2a99-4519-b9c9-36ec8c6f172f
+# # display(typeof(c_1[ctr_n]))
+# display(c_1[ctr_n])
+
+# ╔═╡ b54ce51b-220a-417f-9db9-3e01aa67a554
+begin
+	heaviside_mask = [
+		m>=0 ? 1 : 0 for m in ms
+	]
+	mill_depths = [8,8]
+	subs_vals = Dict{Symbolics.Num, Real}()
+	subs_vals[d1], subs_vals[d2] = mill_depths[1], mill_depths[2]
+	subs_vals[h] = 50
+	subs_vals[a] = 0.501
+	for (i,n) in enumerate(ns)
+		subs_vals[θs[i]] = 0
+	end
+end
+
+# ╔═╡ c53dfcf2-f43c-4837-b43c-e7f61e959fcd
+begin
+	c_vec_sub = Symbolics.substitute.(c_1, Ref(subs_vals))
+	c_vec_sub = Symbolics.value.(c_vec_sub)
+	c_vec_sub2 = Symbolics.substitute.(c_3, Ref(subs_vals))
+	c_vec_sub2 = Symbolics.value.(c_vec_sub2)
+end
+
+# ╔═╡ 1c49766c-eb3c-4580-b584-52bbdeb92c22
+begin
+	c_mat = circular_convolution(ms, c_3, c_1.*t_2, true)
+	c_sub =  Symbolics.substitute.(c_mat, Ref(subs_vals))
+	
+	c_sub = Symbolics.value.(c_sub)
+	ψ = sum(c_mat, dims=2)
+	# λ = simplify.(abs2.(ψ))
+	ψ_sub =  Symbolics.substitute.(ψ, Ref(subs_vals))
+	ψ_sub = (Symbolics.value.(ψ_sub))
+end
+
+# ╔═╡ f66699e8-42c6-4050-b151-d09488d18c7d
+begin
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	# Verify c_0 is at the correct location
+	# println("Center element (index $ctr_n): ", c_3[ctr_n])
+	# println(c_3)
+	# println("eltype(c_3)        = ", eltype(c_3))
+	# println("eltype(c_1)        = ", eltype(c_1))
+	# println("eltype(t_2)        = ", eltype(t_2))
+	# println("eltype(c_1.*t_2)   = ", eltype(c_1 .* t_2))
+	# mask = collect(-0:0) .+ ctr_m
+	# display(c_mat[mask, mask])
+	
+	# # display(c_sub[mask,mask])
+	println(size(ψ), "\n", typeof(ψ) )
+	# display(ψ_sub[ctr_m])
+	println((sum(abs2,c_vec_sub2)))
+	println(sum(abs2,ψ_sub))
+end
+
+# ╔═╡ f0ff5721-cbde-42ec-8220-6312c45fa331
+bar(ns,abs2.(c_vec_sub2),
+   xticks=(ns,ns)
+   )
+
+# ╔═╡ bb143164-a1c0-4a58-88ef-04773006f304
+bar(ns,abs2.(c_vec_sub),
+   xticks=(ns,ns)
+   )
+
 # ╔═╡ 1245f207-f38c-4a3f-8197-4f63587ec7af
 begin
-	fig1_scale = heatmap(ms,ms,c_mat_scale)
-	fig2_scale = bar(ms, c_mat_scale[:,ctr_m+0],
+	fig1_scale = heatmap(ms,ms,abs.(c_sub))
+	fig2_scale = bar(ms, abs2.(ψ_sub),
 						xticks=(ms,ms),
 					 	ylims=(0,1)
 					)
 	plot(fig1_scale, fig2_scale, layout=(1,2), size=(800,400))
 end
+
+# ╔═╡ bf975b75-eafd-4dee-8034-cbc84132f97a
+display(θs_hessian)
+
+# ╔═╡ c0424830-d31b-4cf4-bba8-49dd6036d6cf
+# begin
+# 	ψ_hessian = Symbolics.hessian(λ[ctr_m,1], θs_hessian; simplify = true)
+# end
 
 # ╔═╡ c92cfda0-daac-4436-8a7f-44563e047835
 @bind vec_slider PlutoUI.Slider(1:1:M, default=1)
@@ -1885,9 +2038,21 @@ version = "1.9.2+0"
 
 # ╔═╡ Cell order:
 # ╠═489acf08-c96b-11f0-1c03-11826b73bbdf
+# ╟─71a8bd86-671b-4b3b-a544-60996f228312
+# ╟─b93d750d-f389-42f8-8ca5-25b29df4d344
+# ╠═2b327feb-b550-4f29-b5e1-f96afe9f1b46
+# ╠═bcf9dca9-b58c-4e1f-90fa-ed97ad92a259
+# ╠═bf02d327-64f6-434f-bba3-fd8bfeef963e
+# ╠═86f16c9f-2a99-4519-b9c9-36ec8c6f172f
+# ╠═b54ce51b-220a-417f-9db9-3e01aa67a554
+# ╠═c53dfcf2-f43c-4837-b43c-e7f61e959fcd
+# ╠═1c49766c-eb3c-4580-b584-52bbdeb92c22
 # ╠═f66699e8-42c6-4050-b151-d09488d18c7d
-# ╠═6e9b509a-131d-4e17-91c0-b6eb95b5aa73
+# ╠═f0ff5721-cbde-42ec-8220-6312c45fa331
+# ╠═bb143164-a1c0-4a58-88ef-04773006f304
 # ╠═1245f207-f38c-4a3f-8197-4f63587ec7af
+# ╠═bf975b75-eafd-4dee-8034-cbc84132f97a
+# ╠═c0424830-d31b-4cf4-bba8-49dd6036d6cf
 # ╠═c92cfda0-daac-4436-8a7f-44563e047835
 # ╠═534625b0-6ce3-4d7f-9c36-fc5a160f580b
 # ╠═2f76dc41-c5ab-46c6-84c8-eb3836035dce

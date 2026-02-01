@@ -16,7 +16,7 @@ macro bind(def, element)
     #! format: on
 end
 
-# ╔═╡ 815f51f6-c0c1-424f-bab3-e9dba64a0986
+# ╔═╡ c177c0d2-d16f-11f0-39b9-67c23c068a2a
 begin
 	using Plots
 	using PlutoUI
@@ -24,399 +24,621 @@ begin
 	using Statistics
 	using Base.Threads
 	using LinearAlgebra
-
 	include("../fft.jl")
 	include("gratings.jl")
 	include("zoom.jl")
 end
 
-# ╔═╡ 997a5d95-418f-40c4-8089-94bdfcd95487
-function blazed_grating_1d(N, p, x_apex; thickness=500, mill_depth=208)
-    """
-        thickness = 500 #Angstroms
-        mill_depth = 208 #Angstroms
-    """
-    @assert N % p == 0 "p must divide N"
-    
-    xs = collect(Int, 0:1:(N÷p)-1)                # N/p points, endpoint 1 is excluded
-    x_apex = floor(Int, x_apex * xs[end])
-    d0 = thickness - mill_depth
-    g1 = zeros(Float64, N÷p)
-    for (i,x) in enumerate(xs)
-        if x <= x_apex
-            g1[i] = x/(x_apex+1)
-        else
-            x_shifted = x - (x_apex + 1)
-            g1[i] = -x_shifted/(xs[end] - x_apex) + oneunit(Int)
-        end
-    end
-    g1 .= g1 .* mill_depth .+ d0
-    g1 = repeat(g1, p)
-    return g1
-end
-
-# ╔═╡ 58c2785d-f574-47b6-9da2-5ede814feae6
-function transmission_func(g::AbstractVector, 
-						   aperature::Union{AbstractMatrix, Bool}=true; 
-            σU::Real=π/21, α::Real=0.008)
-    # mask selection: matrix aperture, disk when true, or no mask when false
-    mask = aperature isa AbstractMatrix ? aperature :
-           aperature ? centered_disks(size(g,1)) :
-           ones(eltype(g), size(g))
-
-    # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
-    t = @. cis((σU + 1im * α) * g / 10 * mask) * mask
-    return t
-end
-
-# ╔═╡ 78d01afd-cca8-4056-8e0a-728105a0050d
+# ╔═╡ ba171634-b369-4174-91ef-21fad8c815c8
 begin
-	N = 2^10
-	ctr = N ÷ 2 + 1
-	p = 1
-	N_mill_depths = 25
-	t_2nd = ones(ComplexF64, N)
-	grating_1st_mill_depths = collect(range(50, 200, length = N_mill_depths))
-	phase_shifts = collect(range(0, 2π, length = 20))
-	x_apexes = collect(range(0.0, 1.0, length = 10))
-	prod_sums = zeros(Float64,length(phase_shifts), length(x_apexes), N_mill_depths, 		N_mill_depths)
-	ratios = zeros(Float64, length(phase_shifts), length(x_apexes), N_mill_depths, 			N_mill_depths);
-end
-
-# ╔═╡ 5b0a75a9-0944-4e78-8598-38fd4ff84ace
-begin
-	function cross_correlation_FC(c_t3, c_t1, t2, k)::Number
-		@assert length(c_t3) == length(c_t1) "vectors must be same length"
-	    N = length(c_t3)
-	    c_t3_shifted = circshift(c_t3, -k)
-	    prod = @. c_t3_shifted * c_t1 * t2
-		return sum(prod)
-	end
+	function asawtooth(κ, h, d, a, n; 
+						   phase_shift::Bool=false, mode_block::Bool=false)
+	    β1 = κ*d/(2*π*a)
+	    β2 = κ*d/(2*π*(1-a))
+	    coefficient_1 = cis(κ*(h-d))*cispi(-a*(n-β1))
+	    arg = a*(n-β1)
+	    coefficient_2 = a*(β1+β2)/(n+β2)
+	
+	    if phase_shift
+	        x0 = 2*π*(1-a)
+	        coefficient_1 *= cis(-n*x0) 
+	    end
 	    
-	
-	
-	
-	function ψ_modes_setup(N,p, x_apex ; thickness=500,mill_depths, 			phase_shift=0, mode_blocking=false)
-	    g1st = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[1])
-	    g2nd = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[2])
-		
-		g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-        g2nd = circshift(g2nd, g2_shift)
-		
-	    t1st = transmission_func(g1st, false)
-	    t3rd = transmission_func(g2nd, false)
-	    # t1st ./= N
-	    # t3rd ./= N
-	    t1st_fft = fftshift(fft(ifftshift(t1st)))
-	    t3rd_fft = fftshift(fft(ifftshift(t3rd)))
-		c_t3 = t3rd_fft./N
-	
-	    if mode_blocking
-	        mask = collect(1:1:N)
-	        t1st_fft[mask.<ctr] .= 0
-	        # t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	    end
-		t1st_fft ./=sqrt(sum(abs2, t1st_fft))
+	    heaviside_mask = (n<0 && mode_block && n>1) ? 0 : 1 
+	    
+	    
+	    return coefficient_1*coefficient_2*sinc(arg) * heaviside_mask
+	end
+	function asawtooth_modes(Ns,κ, h, d, a; 
+							 phase_shift::Bool=false, mode_block::Bool=false)
 
-	        
-	
-	    return t1st_fft, c_t3
+		
+	    c_n = zeros(ComplexF64, length(Ns))
+		for (i,n) in enumerate(Ns)
+			c_n[i] = asawtooth(κ,h,d,a,n;
+							   phase_shift = phase_shift, mode_block= mode_block)
+		end
+	    return c_n
 	end
 end
 
-# ╔═╡ 8e5be95e-270a-4d0d-87cc-da6f51c64b47
-function calculations!(grating_1st_mill_depths, grating_2nd_mill_depths, 
-					  prod_sums, ratios)
-	k = -1
-	for (i, md1) in enumerate(grating_2nd_mill_depths)
-	    for (j, md2) in enumerate(grating_1st_mill_depths)
-	        for (w, ps) in enumerate(phase_shifts)
-	            for (l, xa) in enumerate(x_apexes)
-	                t1st_fft, c_t3 = ψ_modes_setup(N, p, xa; thickness=500, 											mill_depths=(md1, md2), phase_shift=ps, 										mode_blocking=true)    
-	                t_2nd[ctr - k] = cis(ps)    
-	                cc = cross_correlation_FC(c_t3, t1st_fft, t_2nd, k)
-					@assert abs(sum(abs2, t1st_fft) - 1) < 1e-10
-					# @assert abs(sum(abs2, c_t3)      - 1) < 1e-10 "sum(abs2,c_t3)=$(sum(abs2,c_t3))"
-					
-					    # unit_vec = (real(prod_sum) + 1im * imag(prod_sum)) / 				abs(prod_sum)
-	
-					coefficient_selected = 
-						abs2(c_t3[ctr] * t1st_fft[ctr-k] * t_2nd[ctr-k] )
-	
-	                prod_sums[w, l, i, j] = abs2(cc)
-	                ratios[w, l, i, j] = coefficient_selected/abs2(cc)
-	            end
-	        end
-	    end
-	end
-	return nothing
+# ╔═╡ a9d77142-f2c8-4831-ba21-e64729479551
+function inv_matrix(A_mat)
+	"""
+	analytically calculated 3x3 inv. I want to check numerical stability
+	"""
+	a,b,c = A_mat[1,:]
+	d,e,f = A_mat[2,:]
+	g,h,i = A_mat[3,:]
+
+	A = e*i - f*h
+	B = -(d*i - f*g)
+	C = d*h - e*g
+
+	D = -(b*i - c*h)
+	E = (a*i-c*g)
+	F = -(a*h-b*g)
+
+	G = (b*f - c*e)
+	H = -(a*f-c*d)
+	I = (a*e - b*d)
+
+	det_A = a*A + b*B + c*C
+	return [A, E, I]./det_A, det_A
 end
 
-# ╔═╡ a3b7bc29-0941-4d20-ae96-5bb298b23d85
+# ╔═╡ 5af34c92-8393-4f8a-b2c8-2dcc2af7b183
+@bind a_slider PlutoUI.Slider(0.1:0.001:0.96, default=0.5)
+
+# ╔═╡ ef32d881-be8d-4b4f-86d5-297c1c97842d
+@bind d1_slider PlutoUI.Slider(1:0.5:30, default=8)
+
+# ╔═╡ ae7e6f0f-e367-4cf0-8f8f-4bee28aff999
+@bind d3_slider PlutoUI.Slider(1:0.5:30, default=8)
+
+# ╔═╡ ce84ff11-df4e-46cd-aae5-493c59715a2b
+md"""
+0.96, 21, 8
+"""
+
+# ╔═╡ 99ce037e-8189-4298-a80a-941a51952e50
 begin
-	calculations!(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums, ratios)
+	N = 30
+	ctr_N = N÷2 + 1
+	Ns = collect(1:N) .- ctr_N
+	L = 11
+	ctr_L = L÷2 + 1
+	Ls = collect(1:L) .- ctr_L
 end
 
-# ╔═╡ 239c6992-08a4-41d6-81db-e508856a9f80
-function plotting(i,j)
-	fig1 =heatmap(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums[i, j, :, :];
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="3rd Grating Mill Depth (Å)",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)   
+# ╔═╡ ae8ed6b4-be40-46fd-bf2b-6d59105262c7
+function FC_matrix(Ls, c_t1, t2, c_t3)
 	
-	fig2 = heatmap(grating_1st_mill_depths, grating_1st_mill_depths, (ratios[i, j, :, :]);
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)
-	# plot!(fig2, grating_1st_mill_depths, grating_1st_mill_depths, 
-	#     label="", color=:black
-	# )  
-	 
-	plot(fig1, fig2, layout=(1,2), size=(900,600),
-		title="w/ $(round(phase_shifts[i]/π, digits=2))π phase shift \n and $(round(x_apexes[j]*100, digits=2))% blazed" )
-end
-
-# ╔═╡ ba5236af-6113-49de-8076-6780da204abd
-
-@bind i_slider PlutoUI.Slider(1:1:length(phase_shifts), default=1)
-
-
-# ╔═╡ a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-@bind j_slider PlutoUI.Slider(1:1:length(x_apexes), default=1)
-
-# ╔═╡ 8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-plotting(i_slider, j_slider)
-
-# ╔═╡ e024340e-bd01-4472-8005-7a1dcf8a9306
-function bar_graph(ks, N, p, x_apex, 
-				   phase_shift, mill_depths, 
-				   mode_blocking=true;α=0.008, kwards...)
+	sel = Ls .+ ctr_N
+	idx = similar(sel)  # temporary index buffer to avoid allocations in the loop
+	c_t1_sel = c_t1[sel]
+	t2_sel = t2[sel]
 	
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	
-	
-	t1 = transmission_func(g1, false; α=α)
-	t3 = transmission_func(g2, false; α=α)
-	
-	# println("real-space: \n",sum(abs2, t1), "\n", sum(abs2, t3))
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-	# println("k-space: \n",sum(abs2, t1st_fft)/N, "\n", sum(abs2, t3rd_fft)/N)
-
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0
-		t1st_fft[mask.>ctr+1] .= 0
-		# println(sum(abs2, t1st_fft))
-		
-	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	# println(sum(abs2, t1st_fft))
-	
-	# println("k-space: \n",sum(abs2, t1st_fft), "\n", sum(abs2, c_t3))
-	
-	t_2nd[ctr+1] = cis(phase_shift)
-	# t_2nd[ctr]
-	
-	ccs = zeros(ComplexF64, length(ks))
-	for (i,w) in enumerate(ks)
-		
-		ccs[i] = cross_correlation_FC(c_t3, t1st_fft, t_2nd, w)
-	end
-	println(sum(abs2.(ccs)))
-	bar(ks, abs2.(ccs); kwards...)
-end
-
-# ╔═╡ db9cf8e6-0810-46c0-8890-3ffd3f648bdf
-
-
-# ╔═╡ dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-@bind phase_slider PlutoUI.Slider(phase_shifts, default=phase_shifts[1])
-
-# ╔═╡ d044989b-06d0-4e7b-a62d-88edc0c46867
-begin
-	ks = collect(-10:1:10)
-	x_apex = 0.5
-	println(phase_slider)
-	bar_graph(ks,N,p,x_apex,phase_slider,[70,190],true; ylims=(0,0.63))
-end
-
-# ╔═╡ 1decf6b8-a62e-494b-9326-225c38b36bb3
-function FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	absorption = 0.008
-	t1 = transmission_func(g1, false, α=absorption)
-	t3 = transmission_func(g2, false, α=absorption)
-	
-
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0	
-		t1st_fft[mask.>ctr+1] .= 0	
-
-	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-
-	return t1st_fft, c_t3, abs.(t1.*c_t3)
-end
-
-# ╔═╡ b618de85-827f-4f86-8939-7e52bc509600
-function FC_matrix(Ms, mill_depths, x_apex)
-
-	c_t1, c_t3, r_prod = FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	c_matrix = Matrix{ComplexF64}(undef, length(Ms), length(Ms))
-
-	
-	for (i,m) in enumerate(Ms)
-		c_t3_shifted = circshift(c_t3, -m)
-		c_matrix[i,:] = c_t3_shifted[Ms.+ctr] .* c_t1[Ms.+ctr] 
-		# c_matrix[i,length(Ms)÷2+1] *= cis(4.29902152596498) 
+	c_matrix = Matrix{eltype(c_t1)}(undef, length(Ls), length(Ls))
+	@inbounds for (i,L) in enumerate(Ls)
+		@. idx = sel + L
+		@. c_matrix[i,:] = c_t3[idx] * c_t1_sel * t2_sel
 	end
 	return c_matrix
 end
 
-# ╔═╡ 0b273ca7-4f99-4db9-91b5-b615ac6ace19
-begin
-	M = 9
-	ctr_M = M÷2 + 1
-	Ms = collect(1:M) .- ctr_M
+# ╔═╡ b4d79501-c1f5-483a-9c19-4613138a16fe
+function fisher_info_calc(c1, c3, indices, d2_m, d2_w, θ_l)
+	m, w = indices[1:2] .+ ctr_N
+	l = indices[3] .+ ctr_L
+	mpl = m + l - ctr_L
+	wpl = w + l - ctr_L
+
+	c_mpl, θ_mpl = abs(c3[mpl]), angle(c3[mpl])
+	c_wpl, θ_wpl = abs(c3[wpl]), angle(c3[wpl])
+	c_m, θ_m, c_w, θ_w = abs(c1[m]), angle(c1[m]), abs(c1[w]), angle(c1[w])
+	# c_1_abs2 = abs2(c1[1+ctr_N])
+	damage_factor = abs2(c1[1+ctr_N])*abs2(c1[ctr_N])
 	
-	c_matrix = FC_matrix(Ms, [70,190], 0.5)
-	fig_c_matrix = heatmap(Ms, Ms, abs.(c_matrix),
-		   	xticks=(Ms,(Ms)),
-			yticks=(Ms,Ms)
-	)
-	println(sum(abs2,(sum(c_matrix, dims=2))))
-	fig2_c_matrix = bar(Ms, abs2.(sum(c_matrix, dims=2)),
-						xticks=(Ms,Ms),
-					   ylims=(0,0.63)
-					   )
-	plot(fig_c_matrix, fig2_c_matrix, layout=(1,2), size=(900,400))
+	arg1 = θ_mpl + θ_m + d2_m - θ_l
+	arg2 = θ_wpl + θ_w + d2_w - θ_l
+	factor = c_mpl * c_wpl * (c_m * c_w) / damage_factor
+	
+	return 4 * factor * sin(arg1) * sin(arg2)
 end
-
-# ╔═╡ f713a74b-43fd-4721-973e-c21e8d1bacf7
-@bind vec_slider PlutoUI.Slider(1:1:10, default=1)
-
-# ╔═╡ 936d80c4-e14f-4ee5-ab0a-bf7981483bad
-begin
-	result = eigen(c_matrix) 
-
-	println("Eigenvalues:", round.(abs.(result.values), digits=8), "\n", 
-			round.(angle.(result.values), digits=2))
-	println("Eigenvalues:", round.(abs.(result.values[vec_slider]), digits=4), "\n", 
-			round.(angle.(result.values[vec_slider]), digits=2))
-	println("Eigenvectors:")
-	# display(round.(abs.(result.vectors[:,vec_slider]),digits=3))
-	# display(round.(angle.(result.vectors[:,vec_slider]),digits=3))
-	# display(Ms)
 	
-end
 
-# ╔═╡ 061a0e13-6de3-4484-a227-b7e1656e3744
-begin
-	
-	fig1 = heatmap(Ms.+ctr_M, Ms, abs.(result.vectors), aspect_ratio=1,
-					xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms),
-				  	xlabel="Eigenvector"
-				  )
-	fig2 = heatmap(Ms.+ctr_M, Ms, angle.(result.vectors), aspect_ratio=1,
-				  	xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms)
-				  )
-	plot(fig1, fig1, layout=(1,2), size=(900,500))
-end
 
-# ╔═╡ d59c2734-22aa-4414-8783-ce1b7005bf60
-begin
+# ╔═╡ a25e8ce1-8a33-4632-b0a2-7a1eb47a5cbf
+function fisher_info(κ, h, d1::Number, d3::Number, a, 
+					 state_values::Union{Vector,Tuple}, ms, ws;
+					phase_shift::Bool=false, mode_block::Bool=false)
 	
-	t2_test = ones(ComplexF64, length(Ms))
 	
-	dot_product_λs = zeros(length(phase_shifts), length(Ms))
-	dp_output = zeros(length(phase_shifts))
-	for (i,θ) in enumerate(phase_shifts)
-		t2_test[ctr_M+1] = cis(θ)
-		dot_product =
-			result.vectors*diagm(result.values)*inv(result.vectors)*t2_test
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		dp_output[i] = abs2(sum(dot_product[ctr_M-1,:]))
-		# t2_t)est[ctr_M+1] = cis(θ)
-		# dot_product = sum(
-		# 		result.vectors.*t2_test,dims=1)
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		# dp_output[i] = abs2(sum(dot_product))
+	c¹ = [asawtooth(κ, h, d1, a, n;
+						 phase_shift=phase_shift, mode_block = mode_block) 
+		  for n in Ns]
+	c¹ ./= sqrt(sum(abs2, c¹))
+	c³ = [asawtooth(κ, h, d3, a, n) for n in Ns]
+
+	
+	t² = ones(ComplexF64, N)
+	ψ0 = FC_matrix(Ls, c¹, t², c³)
+	ψ_mat = copy(ψ0)
+	
+	
+	I_fisher = Array{Float64}(undef, length(ms), length(ws), length(Ls))
+	θ_ls = Vector{Float64}(undef, length(Ls))
+	tmp = similar(ψ_mat, size(ψ_mat, 1), 1)
+	@assert length(state_values) == length(ms)
+	@assert length(ms) == length(ws)
+	for (q, m) in enumerate(ms)
+		idx_m_N, idx_m_L = m + ctr_N, m + ctr_L
+		for (r, w) in enumerate(ws)
+			idx_w_N, idx_w_L = w + ctr_N, w + ctr_L
+
+			
+			
+			# 1. Start from base matrix: ψ_mat = ψ0
+			copy!(ψ_mat, ψ0)  # reuses storage, no allocation
+
+			# 2. Apply the *actual* phases you want:
+			if m==w
+				ψ_mat[:, idx_m_L] .*= cis(state_values[q])
+			else
+				ψ_mat[:, idx_m_L] .*= cis(state_values[q])
+				ψ_mat[:, idx_w_L] .*= cis(state_values[r])
+			end
+			
+				
+			θ_ls .= angle.(sum!(tmp, ψ_mat))
+			for (k,L) in enumerate(Ls)
+				I_fisher[q,r,k] = fisher_info_calc(c¹, c³, 
+											[m,w,L], 
+											state_values[q], state_values[r], θ_ls[k])
+			end
+			
+
+		end
 	end
-	# dot_product .*=result.values[1].*result.vectors[1,ctr_M-1]
-	plot(phase_shifts,
-		 dot_product_λs[:,1]
+	
+	
+	
+	
+
+	
+	return I_fisher, FC_matrix(Ls, c¹, ones(N), c³), angle.(sum!(tmp, ψ0))
+end
+
+# ╔═╡ 0dfa317c-1566-47ad-a776-9191fe50aef9
+@bind d2_0_slider PlutoUI.Slider(0:0.01*π:2π, default=0)
+
+# ╔═╡ f03a7454-6477-44ea-9460-40d2eb873f1a
+@bind d2_1_slider PlutoUI.Slider(0:0.01*π:2π, default=0)
+
+# ╔═╡ bbdce4ca-6478-443d-8a96-e685907113b0
+@bind d2_2_slider PlutoUI.Slider(0:0.01*π:2π, default=0)
+
+# ╔═╡ d095d5d0-7838-484d-a5e7-0690ae4db6d9
+begin
+	params = [
+		π/21 + im * 0.008, # κ
+		50, # h
+		d1_slider,
+		d3_slider,
+		a_slider
+	]
+	state_values = [d2_0_slider, d2_1_slider, d2_2_slider]
+	ms = collect(0:2) 
+	ws = copy(ms)
+end
+
+# ╔═╡ 77422799-7a50-454c-8d27-4aa744fa43a9
+begin
+	I_fisher, ψ_mat, θ_ls_intial = fisher_info(params..., state_values, ms, ws; mode_block=true, phase_shift=true);
+	""
+end
+
+# ╔═╡ c8525e90-85d7-4eee-89e3-1271a69a68b8
+begin
+	ψ_mat_copy = copy(ψ_mat)
+	ψ_mat_copy[:,ctr_L+1] .*=cis(d2_1_slider)
+	
+	ψls = abs2.(sum(ψ_mat_copy,dims=2))
+	println(sum(ψls))
+	# heatmap(abs.(ψ_mat))
+	bar(Ls, ψls,
+	   xticks = (Ls,Ls))
+	# ylims!(-pi,pi)
+	
+	ylims!(0,0.5)
+	""
+end
+
+# ╔═╡ 4643e500-1dad-400f-8876-12e7bddedbca
+function moore_penrose_inverse(A)
+	"""
+    moore_penrose_inverse(A) -> (A_pinv, ndropped)
+
+	Compute a modified Moore–Penrose pseudoinverse of `A`, similar to `pinv(A)`,
+	but progressively zero out the smallest singular values until the diagonal
+	of the pseudoinverse is nonnegative.
+	
+	Returns the pseudoinverse and the number of singular values dropped.
+	"""
+    F = svd(A)              # A = U * Diagonal(S) * V'
+    U, S, V = F.U, F.S, F.V
+
+    # Start from the usual pseudoinverse: A⁺ = V * Diagonal(1 ./ S) * U'
+    Sinv = 1 ./ S
+    A_pinv = V * Diagonal(Sinv) * U'
+	A_reconstructed = U * Diagonal(S) * V'
+    d = diag(A_pinv)
+
+    # If all diagonal entries are already ≥ 0, nothing to do.
+    if all(d .>= 0)
+        return A_pinv, A_reconstructed, 0
+    end
+
+    ndropped = 0
+    # SVD in Julia gives singular values sorted descending,
+    # so we drop from the smallest upward: last index → first.
+    for k in length(S):-1:1
+        ndropped += 1
+        Sinv[k] = 0                 # zero out one more smallest σ⁻¹
+		S[k] = 0
+        A_pinv = V * Diagonal(Sinv) * U'
+		A_reconstructed = U * Diagonal(S) * V'
+        d = diag(A_pinv)
+
+        if all(d .>= 0)
+            return A_pinv, A_reconstructed, ndropped
+        end
+    end
+
+    # If even dropping all singular values doesn't fix it, return last result
+    return A_pinv, A_reconstructed, ndropped
+end
+
+# ╔═╡ a2779852-cbe3-4170-80a6-db764650cbb0
+begin
+	I_test = sum(I_fisher,dims=3)[:,:,1]
+	I_fisher_plot = Hermitian(0.5 .* (I_test .+ I_test'))
+	ms_sub = 0:1
+	I_fisher_collapsed = sum(I_fisher_plot, dims=3)[ms_sub.+1,ms_sub.+1, 1]
+	pseudo_inv_custom, I_reconstructed, n_dropped = moore_penrose_inverse(I_fisher_collapsed)
+	println("n_dropped: ", n_dropped)
+	display(pseudo_inv_custom)
+	discriminant(A) = ((A[2,2] - A[1,1])/2)^2 - A[1,2]^2
+	discriminant_factored(A) = [(A[2,2] - A[1,1])/2 - A[1,2], 
+								(A[2,2] - A[1,1])/2 + A[1,2]]
+	eigen_mean(A) = (A[2,2] + A[1,1])/2
+	println("discriminant:  $(discriminant(I_fisher_collapsed))")
+	println("discriminant_factored:  $(discriminant_factored(I_fisher_collapsed))")
+	println("eigenvalues: $(eigen(I_fisher_collapsed).values)")
+	println("eignevalue center: $(eigen_mean(I_fisher_collapsed))" )
+
+	println("discriminant:  $(discriminant(I_reconstructed))")
+	println("discriminant_factored:  $(discriminant_factored(I_reconstructed))")
+	println("eigenvalues: $(eigen(I_reconstructed).values)")
+	println("eignevalue center: $(eigen_mean(I_reconstructed))" )
+	
+	fig1 = heatmap(ms_sub, ms_sub, I_reconstructed,
+			   	xticks = (ms_sub, ms_sub),
+			   	yticks = (ms_sub, ms_sub),
+				aspect_ratio=1,
+				title = "num: $(diag(pseudo_inv_custom).>=0), \n  $(tr(pseudo_inv_custom))"
+			   )
+	fig2 = heatmap(ms_sub, ms_sub, I_fisher_collapsed,
+				   	xticks = (ms, ms),
+				   	yticks = (ws, ws),
+					aspect_ratio=1, 
+				   	title = "$(det(I_fisher_collapsed))"
+				  )
+	plot(fig1,fig2, layout=(1,2))
+end
+
+# ╔═╡ ffe174e1-ff7f-4839-b7a8-b89d2c26a761
+function temp_name(d1_mill_depths, d3_mill_depths, a_slider_new)
+	local params = [
+		π/21 + im * 0.000, # κ
+		50, # h
+		0,
+		0,
+		a_slider_new
+	]
+	local ms = collect(0:1) 
+	local ws = copy(ms)
+	
+	d2_step = 0.1*π
+	d2_0s = d2_step : d2_step : π-d2_step
+	d2_1s, d2_2s = copy(d2_0s), copy(d2_0s)
+	d2s = [d2_0s, d2_1s, d2_2s]
+	d2_iterators = Iterators.product(d2s[ms.+1]...)
+	
+	
+	
+	local I_fisher = Matrix{Float64}(undef, length(d1_mill_depths), length(d3_mill_depths))
+	
+	for (i, d1) in enumerate(d1_mill_depths)
+		params[3] = d1
+		for (j, d3) in enumerate(d3_mill_depths)
+			params[4] = d3
+			total_trace = 0.0
+			for state_vals in d2_iterators
+				I_fisher_tmp, _ = fisher_info(params..., state_vals, ms, ws;
+									  mode_block=true, phase_shift=true)
+				# size(I_fisher_tmp) = ms, ws, Ls
+				# println(size(I_fisher_tmp))
+				I_fisher_collapsed = sum(I_fisher_tmp, dims=3)[:,:,1]
+				
+				pseudo_inv, I_reconstructed, _ = moore_penrose_inverse(I_fisher_collapsed)
+				total_trace += tr(pseudo_inv)
+				# println(total_trace, " ", state_vals, " ", n_dropped)
+			end
+			I_fisher[i,j] = total_trace
+		end
+	end
+				
+	
+	
+	
+	
+	
+	return I_fisher
+end
+
+# ╔═╡ 9608086f-27d6-47b3-b2c6-6e60d423f3d6
+@bind a_slider_new PlutoUI.Slider(0.1:0.001:0.96, default=0.501)
+
+# ╔═╡ 5a8c53e8-4c33-4306-a6da-99db63d9b0ab
+begin
+	d1s_new = collect(1:1:41)
+	var_trace = temp_name(d1s_new,d1s_new,a_slider_new)
+	""
+end
+
+# ╔═╡ fcfbfc71-c230-41d2-96c5-1822be060aab
+begin
+	println(argmax((inv.(var_trace))))
+	heatmap(log1p.(inv.(var_trace)))
+end
+
+# ╔═╡ bf4915a1-6cbe-452f-b637-de6123c5046f
+function fisher_info_mw(κ, h, d1::Vector, d3::Vector, a, 
+					 d2_ms::Vector, d2_ws::Vector, (m,w);
+					phase_shift::Bool=false, mode_block::Bool=false)
+	idx_m_N, idx_m_L = m + ctr_N, m + ctr_L
+	idx_w_N, idx_w_L = w + ctr_N, w + ctr_L
+
+	
+	
+	
+	t² = ones(ComplexF64, N)
+	
+	ψ_mat = Matrix{ComplexF64}(undef, length(Ls), length(Ls))
+	θ_ls = Vector{Float64}(undef, length(Ls))
+	tmp = similar(ψ_mat, size(ψ_mat, 1), 1)
+	I_fisher_integral = Array{Float64}(undef, length(d1), length(d3))
+
+
+	if m == w
+		"""
+		"""
+		Δx = (d2_ms[2] - d2_ms[1])
+		Nx_points = length(d2_ms)
+		
+		for (q, dist_1) in enumerate(d1)
+			for (r, dist_3) in enumerate(d3)
+				c¹ = [asawtooth(κ, h, dist_1, a, n;
+							 phase_shift=phase_shift, 
+								mode_block = mode_block) 
+					  				for n in Ns]
+				c³ = [asawtooth(κ, h, dist_3, a, n) for n in Ns]
+				ψ0 = FC_matrix(Ls, c¹, t², c³)
+				I_fisher_sum = 0.0
+				# 1D array of I_11(d2)
+            	f_vals = similar(d2_ms, Float64)
+				for (i,d2_m) in enumerate(d2_ms)				
+					
+					# 1. Start from base matrix: ψ_mat = ψ0
+					copy!(ψ_mat, ψ0)  # reuses storage, no allocation
+	
+					# 2. Apply the *actual* phases you want:
+					ψ_mat[:, idx_m_L] .*= cis(d2_m)
+					
+
+					θ_ls .= angle.(sum!(tmp, ψ_mat))
+					L_sum = 0.0
+					for (k,L) in enumerate(Ls)
+						L_sum += fisher_info_calc(c¹, c³, 
+													[m,w,L], 
+													d2_m, d2_m, θ_ls[k])
+					end
+					f_vals[i] = L_sum
+					# I_fisher_sum += L_sum
+					
+				end
+	
+				
+				# I_fisher_integral[q,r] = Δx*I_fisher_sum
+				I_fisher_integral[q,r] = Δx*(sum(f_vals) 
+										- (f_vals[1] + f_vals[end])/2)
+	
+				
+			end
+		end
+		return I_fisher_integral
+	end
+	
+	
+	
+	ΔxΔy = (d2_ms[2] - d2_ms[1])*(d2_ws[2] - d2_ws[1])
+	NxNy_points = length(d2_ms)*length(d2_ws)
+	
+	for (q, dist_1) in enumerate(d1)
+		for (r, dist_3) in enumerate(d3)
+			c¹ = [asawtooth(κ, h, dist_1, a, n;
+						 phase_shift=phase_shift, 
+							mode_block = mode_block) 
+				  				for n in Ns]
+			c¹ ./=sqrt(sum(abs2, c¹))
+			c³ = [asawtooth(κ, h, dist_3, a, n) for n in Ns]
+			ψ0 = FC_matrix(Ls, c¹, t², c³)
+			I_fisher_sum = 0.0
+			for (i,d2_m) in enumerate(d2_ms)				
+				for (j,d2_w) in enumerate(d2_ws)
+					# 1. Start from base matrix: ψ_mat = ψ0
+	                copy!(ψ_mat, ψ0)  # reuses storage, no allocation
+	
+	                # 2. Apply the *actual* phases you want:
+	                ψ_mat[:, idx_m_L] .*= cis(d2_m)
+	                ψ_mat[:, idx_w_L] .*= cis(d2_w)
+					
+
+					θ_ls .= angle.(sum!(tmp, ψ_mat))
+					L_sum = 0.0
+					for (k,L) in enumerate(Ls)
+						L_sum += fisher_info_calc(c¹, c³, 
+													[m,w,L], 
+													d2_m, d2_w, θ_ls[k])
+					end
+					I_fisher_sum += L_sum
+				end
+			end
+
+			
+			I_fisher_integral[q,r] = ΔxΔy*I_fisher_sum/NxNy_points
+
+			
+		end
+	end
+	
+	
+	
+	
+	
+
+	
+	return I_fisher_integral
+end
+
+# ╔═╡ 3b8e1509-8249-4173-8e40-a0c528aac91e
+@bind a_mw_slider PlutoUI.Slider(0.1:0.001:0.96, default=0.501)
+
+# ╔═╡ 7ee0c620-3d6e-4051-ad8e-add568b1d02e
+begin
+	d1s = collect(1:1:41)
+	d3s = copy(d1s)
+	d2_ms_int = collect(0:0.05*π:2π)
+	d2_ws_int = copy(d2_ms_int)
+
+	
+	I_fisher_integral = fisher_info_mw(π/21 + im*0.000, 50, d1s, d3s, a_mw_slider, 
+						 d2_ms_int, d2_ws_int, (2,2);
+						phase_shift=true, mode_block=true)
+	""
+end
+
+# ╔═╡ 3fc762b6-cc8b-41ff-bf74-56b632fdf970
+size(I_fisher_integral)
+
+# ╔═╡ 78ad7a96-05f4-4d83-95fa-c37064894d1c
+begin
+	crds_row_max = argmax(I_fisher_integral, dims=1)
+	crds_col_max = argmax(I_fisher_integral, dims=2)
+	crds_max = argmax(I_fisher_integral)
+	# println(size(crds), "\n",crds[:])
+	
+	d_row_max = [[d1s[crd[2]] for crd in crds_row_max],
+				 [d3s[crd[1]] for crd in crds_row_max]]
+	d_col_max = [[d1s[crd[2]] for crd in crds_col_max],
+				 [d3s[crd[1]] for crd in crds_col_max]]
+	d_max = [
+			[d1s[crds_max[2]]],
+			[d3s[crds_max[1]]]
+			]
+
+
+	heatmap(d1s,d3s,log.(I_fisher_integral))
+	scatter!(d_row_max[1],d_row_max[2], label="", color=:green)
+	scatter!(d_col_max[1],d_col_max[2], label="", color=:green)
+	scatter!(d_max[1],d_max[2], label="", color=:red, title="$(d_max)")
+
+	# contourf!(d1s,d3s,I_fisher_integral)
+end
+
+# ╔═╡ cc8c8720-7b05-4d7d-b1e7-510da619540c
+begin
+	ψ_ℓ(ℓ, c3, c1, Δϕ) = c3[ctr_N+ℓ] * c1[ctr_N] * cis(-Δϕ/2) +
+		c3[ctr_N+1+ℓ] * c1[ctr_N+1]  * cis(Δϕ/2) #α_ℓ + β_ℓ
+	
+	β_ℓ(ℓ, c3, c1, Δϕ) = c3[ctr_N+1+ℓ] * c1[ctr_N+1] * cis(Δϕ/2) 
+	
+	# term(ℓ, c3, c1, Δϕ) =sqrt(inv(abs2(c1[ctr_N + 1]) + abs2(c1[ctr_N]))) *abs(β_ℓ(ℓ, c3, c1, Δϕ))*sin(angle(β_ℓ(ℓ, c3, c1, Δϕ)) -
+	# 		angle(ψ_ℓ(ℓ, c3, c1, Δϕ))
+	term(ℓ, c3, c1, Δϕ) =abs(β_ℓ(ℓ, c3, c1, Δϕ))*sin(angle(β_ℓ(ℓ, c3, c1, Δϕ)) -
+			angle(ψ_ℓ(ℓ, c3, c1, Δϕ))																							   
+														  )
+	# sqrt(inv(abs2(c1[ctr_N + 1]) + abs2(c1[ctr_N])))
+end
+
+# ╔═╡ 972b8b8b-fe76-412c-b9f7-e6a24a4440bb
+@bind d1_slider_new PlutoUI.Slider(1:0.5:30, default=12)
+
+# ╔═╡ 1a94c9eb-e07e-4e03-ba07-7c39a7415b38
+@bind d3_slider_new PlutoUI.Slider(1:0.5:30, default=12)
+
+# ╔═╡ 6a43aecb-48f3-46d6-b0e2-1c841c4f966b
+@bind ℓ_slider PlutoUI.Slider(-5:1:5, default=-1)
+
+# ╔═╡ 57bd006d-dba8-496d-abb2-3794ad376b0c
+function fisher_diff_basis(Δϕs, d1_slider, d3_slider)
+	κ = π/21 + im*0.008
+	h = 50
+	a = 0.5
+	c1 = [asawtooth(κ, h, d1_slider, a, n;
+						 phase_shift=false, mode_block = true) 
+		  for n in Ns]
+	c3 = [asawtooth(κ, h, d3_slider, a, n) for n in Ns]
+	output = Vector{Float64}(undef, length(Δϕs))
+	test = Vector{Float64}(undef, length(Δϕs))
+	for (i, Δϕ) in enumerate(Δϕs)
+		test[i] = angle(β_ℓ(ℓ_slider, c3, c1, Δϕ))-angle(ψ_ℓ(ℓ_slider, c3, c1, Δϕ))
+		output[i] = sum([term(ℓ, c3, c1, Δϕ)^2 for ℓ in Ls])
+	end
+	return output, test
+end
+
+# ╔═╡ b8e5b451-ac35-41fc-bafd-0f12e3092143
+begin
+	Δϕs= collect(0:0.001:4π)
+	output, test = fisher_diff_basis(Δϕs, d1_slider_new, d3_slider_new)
+	plot(Δϕs, output
 		)
-	plot!(phase_shifts, 
-		  dot_product_λs[:,end]
-		 )
-	plot!(phase_shifts, 
-		 dp_output
-		 )
-	vline!([1.9841637812146062])
-	
 	
 end
 
-# ╔═╡ 22274477-32f9-4aff-b410-8e345d0977a6
-F = svd(c_matrix);
+# ╔═╡ 6d5ef001-9f37-44e1-81f3-a616600498a4
+plot(Δϕs, test
+		)
 
-# ╔═╡ 12944ad3-df9e-4aaf-8bb9-08c5972145ef
-begin
-	fig1_F = heatmap(Ms, Ms,abs2.(F.U),
-					 colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_F = heatmap(Ms, Ms,log.(1 .+(abs.(diagm(F.S))))
-					)
-	fig3_F = heatmap(Ms, Ms, abs2.(F.Vt),
-					 colorbar=false
-					)
-	println(F.S[1:4])
-	println(F.S[1:4]./F.S[1])
-	plot(fig1_F, fig2_F, fig3_F, layout=(1,3), size=(1200,500))
-end
-
-# ╔═╡ 9d59f49a-2da0-4955-801f-a3c91cdc3576
-F_QR = qr(c_matrix)
-
-# ╔═╡ e69ed969-232c-4f3e-bc26-939afa79f11d
-begin
-	fig1_Fqr = heatmap(Ms, Ms,(abs.(F_QR.Q)),
-					 # colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_Fqr = heatmap(Ms, Ms,(abs.(F_QR.R))
-					)
-	
-	plot(fig1_Fqr, fig2_Fqr, layout=(1,2), size=(1200,500))
+# ╔═╡ d81452d9-710c-4bbc-8f79-b920491ce903
+function fisher_diff_basis_angle(Δϕs, d1_slider, d3_slider)
+	κ = π/21 + im*0.008
+	h = 50
+	a = 0.5
+	c1 = [asawtooth(κ, h, d1_slider, a, n;
+						 phase_shift=true, mode_block = true) 
+		  for n in Ns]
+	c3 = [asawtooth(κ, h, d3_slider, a, n) for n in Ns]
+	output = Vector{Float64}(undef, length(Δϕs))
+	test = Vector{Float64}(undef, length(Δϕs))
+	for (i, Δϕ) in enumerate(Δϕs)
+		# test[i] = angle(ψ_ℓ(0, c3, c1, Δϕ))
+		output[i] = sum([term(ℓ, c3, c1, Δϕ)^2 for ℓ in Ls])
+	end
+	return output
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
@@ -1570,31 +1792,41 @@ version = "1.9.2+0"
 """
 
 # ╔═╡ Cell order:
-# ╠═815f51f6-c0c1-424f-bab3-e9dba64a0986
-# ╟─997a5d95-418f-40c4-8089-94bdfcd95487
-# ╟─58c2785d-f574-47b6-9da2-5ede814feae6
-# ╠═5b0a75a9-0944-4e78-8598-38fd4ff84ace
-# ╠═78d01afd-cca8-4056-8e0a-728105a0050d
-# ╟─8e5be95e-270a-4d0d-87cc-da6f51c64b47
-# ╠═a3b7bc29-0941-4d20-ae96-5bb298b23d85
-# ╠═239c6992-08a4-41d6-81db-e508856a9f80
-# ╠═ba5236af-6113-49de-8076-6780da204abd
-# ╠═a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-# ╠═8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-# ╠═e024340e-bd01-4472-8005-7a1dcf8a9306
-# ╠═d044989b-06d0-4e7b-a62d-88edc0c46867
-# ╠═db9cf8e6-0810-46c0-8890-3ffd3f648bdf
-# ╠═dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-# ╠═1decf6b8-a62e-494b-9326-225c38b36bb3
-# ╠═b618de85-827f-4f86-8939-7e52bc509600
-# ╠═0b273ca7-4f99-4db9-91b5-b615ac6ace19
-# ╠═f713a74b-43fd-4721-973e-c21e8d1bacf7
-# ╠═936d80c4-e14f-4ee5-ab0a-bf7981483bad
-# ╠═061a0e13-6de3-4484-a227-b7e1656e3744
-# ╠═d59c2734-22aa-4414-8783-ce1b7005bf60
-# ╠═22274477-32f9-4aff-b410-8e345d0977a6
-# ╠═12944ad3-df9e-4aaf-8bb9-08c5972145ef
-# ╠═9d59f49a-2da0-4955-801f-a3c91cdc3576
-# ╠═e69ed969-232c-4f3e-bc26-939afa79f11d
+# ╠═c177c0d2-d16f-11f0-39b9-67c23c068a2a
+# ╟─ae8ed6b4-be40-46fd-bf2b-6d59105262c7
+# ╠═ba171634-b369-4174-91ef-21fad8c815c8
+# ╠═b4d79501-c1f5-483a-9c19-4613138a16fe
+# ╠═a25e8ce1-8a33-4632-b0a2-7a1eb47a5cbf
+# ╟─a9d77142-f2c8-4831-ba21-e64729479551
+# ╠═5af34c92-8393-4f8a-b2c8-2dcc2af7b183
+# ╠═ef32d881-be8d-4b4f-86d5-297c1c97842d
+# ╠═ae7e6f0f-e367-4cf0-8f8f-4bee28aff999
+# ╟─ce84ff11-df4e-46cd-aae5-493c59715a2b
+# ╠═99ce037e-8189-4298-a80a-941a51952e50
+# ╠═d095d5d0-7838-484d-a5e7-0690ae4db6d9
+# ╠═77422799-7a50-454c-8d27-4aa744fa43a9
+# ╠═0dfa317c-1566-47ad-a776-9191fe50aef9
+# ╠═f03a7454-6477-44ea-9460-40d2eb873f1a
+# ╠═bbdce4ca-6478-443d-8a96-e685907113b0
+# ╟─c8525e90-85d7-4eee-89e3-1271a69a68b8
+# ╟─4643e500-1dad-400f-8876-12e7bddedbca
+# ╠═a2779852-cbe3-4170-80a6-db764650cbb0
+# ╟─ffe174e1-ff7f-4839-b7a8-b89d2c26a761
+# ╠═9608086f-27d6-47b3-b2c6-6e60d423f3d6
+# ╠═5a8c53e8-4c33-4306-a6da-99db63d9b0ab
+# ╠═fcfbfc71-c230-41d2-96c5-1822be060aab
+# ╟─bf4915a1-6cbe-452f-b637-de6123c5046f
+# ╠═3b8e1509-8249-4173-8e40-a0c528aac91e
+# ╠═7ee0c620-3d6e-4051-ad8e-add568b1d02e
+# ╠═3fc762b6-cc8b-41ff-bf74-56b632fdf970
+# ╠═78ad7a96-05f4-4d83-95fa-c37064894d1c
+# ╠═cc8c8720-7b05-4d7d-b1e7-510da619540c
+# ╠═972b8b8b-fe76-412c-b9f7-e6a24a4440bb
+# ╠═1a94c9eb-e07e-4e03-ba07-7c39a7415b38
+# ╠═6a43aecb-48f3-46d6-b0e2-1c841c4f966b
+# ╠═57bd006d-dba8-496d-abb2-3794ad376b0c
+# ╠═b8e5b451-ac35-41fc-bafd-0f12e3092143
+# ╠═6d5ef001-9f37-44e1-81f3-a616600498a4
+# ╠═d81452d9-710c-4bbc-8f79-b920491ce903
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002

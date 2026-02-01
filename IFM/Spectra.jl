@@ -4,434 +4,297 @@
 using Markdown
 using InteractiveUtils
 
-# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
-macro bind(def, element)
-    #! format: off
-    return quote
-        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
-        local el = $(esc(element))
-        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
-        el
-    end
-    #! format: on
-end
-
-# ╔═╡ 815f51f6-c0c1-424f-bab3-e9dba64a0986
+# ╔═╡ 183d5ede-f8c8-11f0-33f6-15efc271ca20
 begin
 	using Plots
-	using PlutoUI
-	using LaTeXStrings
-	using Statistics
-	using Base.Threads
 	using LinearAlgebra
-
-	include("../fft.jl")
-	include("gratings.jl")
-	include("zoom.jl")
+	using Symbolics
 end
 
-# ╔═╡ 997a5d95-418f-40c4-8089-94bdfcd95487
-function blazed_grating_1d(N, p, x_apex; thickness=500, mill_depth=208)
-    """
-        thickness = 500 #Angstroms
-        mill_depth = 208 #Angstroms
-    """
-    @assert N % p == 0 "p must divide N"
-    
-    xs = collect(Int, 0:1:(N÷p)-1)                # N/p points, endpoint 1 is excluded
-    x_apex = floor(Int, x_apex * xs[end])
-    d0 = thickness - mill_depth
-    g1 = zeros(Float64, N÷p)
-    for (i,x) in enumerate(xs)
-        if x <= x_apex
-            g1[i] = x/(x_apex+1)
-        else
-            x_shifted = x - (x_apex + 1)
-            g1[i] = -x_shifted/(xs[end] - x_apex) + oneunit(Int)
-        end
-    end
-    g1 .= g1 .* mill_depth .+ d0
-    g1 = repeat(g1, p)
-    return g1
-end
-
-# ╔═╡ 58c2785d-f574-47b6-9da2-5ede814feae6
-function transmission_func(g::AbstractVector, 
-						   aperature::Union{AbstractMatrix, Bool}=true; 
-            σU::Real=π/21, α::Real=0.008)
-    # mask selection: matrix aperture, disk when true, or no mask when false
-    mask = aperature isa AbstractMatrix ? aperature :
-           aperature ? centered_disks(size(g,1)) :
-           ones(eltype(g), size(g))
-
-    # apply transmission (preserves previous behavior; pass σU=0.15 if you need that legacy value)
-    t = @. cis((σU + 1im * α) * g / 10 * mask) * mask
-    return t
-end
-
-# ╔═╡ 78d01afd-cca8-4056-8e0a-728105a0050d
+# ╔═╡ 09463c12-9196-47fe-9acc-85e57da176db
 begin
-	N = 2^10
-	ctr = N ÷ 2 + 1
-	p = 1
-	N_mill_depths = 25
-	t_2nd = ones(ComplexF64, N)
-	grating_1st_mill_depths = collect(range(50, 200, length = N_mill_depths))
-	phase_shifts = collect(range(0, 2π, length = 20))
-	x_apexes = collect(range(0.0, 1.0, length = 10))
-	prod_sums = zeros(Float64,length(phase_shifts), length(x_apexes), N_mill_depths, 		N_mill_depths)
-	ratios = zeros(Float64, length(phase_shifts), length(x_apexes), N_mill_depths, 			N_mill_depths);
-end
-
-# ╔═╡ 5b0a75a9-0944-4e78-8598-38fd4ff84ace
-begin
-	function cross_correlation_FC(c_t3, c_t1, t2, k)::Number
-		@assert length(c_t3) == length(c_t1) "vectors must be same length"
-	    N = length(c_t3)
-	    c_t3_shifted = circshift(c_t3, -k)
-	    prod = @. c_t3_shifted * c_t1 * t2
-		return sum(prod)
+	abstract type OpticalElement end
+	struct Element <: OpticalElement
+	    M::Matrix{<:Real}
+	    d::Real
 	end
-	    
+	function thin_lens(f::T) where {T<:Real}
+    M = [ 1.   0.  
+         -1/f   1.  ]
+    # lens has no physical propagation length; use 0 or whatever convention
+	    return Element(M, 0.0)
+	end
 	
-	
-	
-	function ψ_modes_setup(N,p, x_apex ; thickness=500,mill_depths, 			phase_shift=0, mode_blocking=false)
-	    g1st = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[1])
-	    g2nd = blazed_grating_1d(N, p, x_apex; thickness=thickness, 			mill_depth=mill_depths[2])
-		
-		g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-        g2nd = circshift(g2nd, g2_shift)
-		
-	    t1st = transmission_func(g1st, false)
-	    t3rd = transmission_func(g2nd, false)
-	    # t1st ./= N
-	    # t3rd ./= N
-	    t1st_fft = fftshift(fft(ifftshift(t1st)))
-	    t3rd_fft = fftshift(fft(ifftshift(t3rd)))
-		c_t3 = t3rd_fft./N
-	
-	    if mode_blocking
-	        mask = collect(1:1:N)
-	        t1st_fft[mask.<ctr] .= 0
-	        # t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	    end
-		t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-
-	        
-	
-	    return t1st_fft, c_t3
+	function free_space(d::T) where {T<:Real}
+	    M = [1.  d    
+	         0.  1. 
+	        ]
+	    return Element(M, d)
+	end
+	function aperture() 
+	    M = [1.  0    
+	         0.  1. 
+	        ]
+	    return Element(M, 0.0)
+	end
+	function S(d::T) where {T<:Real}
+		return free_space(d).M
+	end
+	function L(f::T) where {T<:Real}
+		return thin_lens(f).M
 	end
 end
 
-# ╔═╡ 8e5be95e-270a-4d0d-87cc-da6f51c64b47
-function calculations!(grating_1st_mill_depths, grating_2nd_mill_depths, 
-					  prod_sums, ratios)
-	k = -1
-	for (i, md1) in enumerate(grating_2nd_mill_depths)
-	    for (j, md2) in enumerate(grating_1st_mill_depths)
-	        for (w, ps) in enumerate(phase_shifts)
-	            for (l, xa) in enumerate(x_apexes)
-	                t1st_fft, c_t3 = ψ_modes_setup(N, p, xa; thickness=500, 											mill_depths=(md1, md2), phase_shift=ps, 										mode_blocking=true)    
-	                t_2nd[ctr - k] = cis(ps)    
-	                cc = cross_correlation_FC(c_t3, t1st_fft, t_2nd, k)
-					@assert abs(sum(abs2, t1st_fft) - 1) < 1e-10
-					# @assert abs(sum(abs2, c_t3)      - 1) < 1e-10 "sum(abs2,c_t3)=$(sum(abs2,c_t3))"
-					
-					    # unit_vec = (real(prod_sum) + 1im * imag(prod_sum)) / 				abs(prod_sum)
+# ╔═╡ 16e12235-9796-4b21-824b-11c83422e314
+begin
+	n_lenses = 5
+	n_apertures = 2
+	n_ds = n_lenses + n_apertures + 1
 	
-					coefficient_selected = 
-						abs2(c_t3[ctr] * t1st_fft[ctr-k] * t_2nd[ctr-k] )
+	@variables d₁, f₁, d₂, f₂,  d₃, f₃
+	println(L(f₁)[2,1])
+	println(substitute.(S(f₁), (Dict(f₁ => 2.),)))
+end
+
+# ╔═╡ 26c2d1f3-90b0-47ef-a2ec-1b62568032c2
+function test_func(fs,ds,x_cutoffs)
+	test = S(ds[3])*
+		L(fs[2])*S(ds[2])*  #c2 lens
+		L(fs[1])*S(ds[1])	#c1 lens
+	return test
+end
+
+# ╔═╡ 13325be7-4d0b-4c3b-beb9-97728f57650f
+begin
+	ds = Symbolics.variables(:d, 1:n_ds)
+	fs = Symbolics.variables(:f, 1:n_lenses)
+	# x_cutoffs = Symbolics.variables(:x_cutoff, 1:n_apertures)
+end
+
+# ╔═╡ 73690b54-97e3-4401-af76-fc4c0061c00d
+begin
+	substitute.(S(d₁)*L(f₁)*S(d₁), (Dict(f₁ => 5., d₁ => 5., d₂ => 2.),))
+end
+
+# ╔═╡ 6eb6b350-94b5-4ebc-b027-39acadcd5baf
+S(2)*L(2)*S(2)
+
+# ╔═╡ c9214f07-6595-4d4c-a703-68a3d191eede
+function propagate_single_state!(As::Vector{Element}, state0::Vector{<:Real}, cache::Vector{<:Real})
 	
-	                prod_sums[w, l, i, j] = abs2(cc)
-	                ratios[w, l, i, j] = coefficient_selected/abs2(cc)
-	            end
-	        end
-	    end
+	@assert length(As)+1 == length(cache)
+
+	state = copy(state0)
+	cache[1] = state[1] #this cache holds x-values of the state propagating
+	for (j,A) in enumerate(As)
+		state_new = A.M*state
+		cache[j+1] = state_new[1]
+		state = state_new
 	end
 	return nothing
 end
 
-# ╔═╡ a3b7bc29-0941-4d20-ae96-5bb298b23d85
+# ╔═╡ 97d05287-2e7a-4606-84f0-e5f1b37afc6e
+function propagate_single_state(As::Vector{Element}, state::Vector{<:Real})
+	
+	x_points = Vector{Float64}(undef, length(As) +1)
+	x_points[1] = state[1] #this cache holds x-values of the state propagating
+	for (j,A) in enumerate(As)
+		state_new = A.M*state
+		x_points[j+1] = state_new[1]
+		state = state_new
+	end
+	return x_points
+end
+
+# ╔═╡ ebccca3d-2f41-4c06-9321-7e8a40176ab4
+function propagate(As::Vector{Element}, states::Vector{<:Vector})
+	
+	z_points = vcat(0.0, cumsum([A.d for A in As]))
+	x_points = [Vector{Float64}(undef, length(z_points)) for _ in eachindex(states) ]
+	
+	
+	for (i,state) in enumerate(states)
+		propagate_single_state!(As, state, x_points[i])
+	end
+			
+	
+	return x_points, z_points		
+end
+
+# ╔═╡ 293f5f68-d535-492f-9934-9064fe290923
 begin
-	calculations!(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums, ratios)
+	θs = -2:0.2:2
+	rs = [[θ/10, θ] for θ in θs for x in -0.1:0.1:0.1]
+	rs = [[0, θ] for θ in θs for x in -0.1:0.1:0.1]
+	operator = reverse([free_space(0.5),
+						thin_lens(0.5), free_space(0.5),
+						thin_lens(0.5), free_space(2),
+						
+						aperture(), free_space(0.5), 
+						thin_lens(1.0),free_space(0.5), 
+						aperture(),free_space(0.5),
+					   thin_lens(1),free_space(2),
+					   thin_lens(0.6),free_space(1)])
+	lenses = Bool[1,1,0,1,0,1,1] #true==lens, false==aperture
+	x_cutoffs = [1, 1.3]
+	x_points, z_points = propagate(operator,rs);
+	aperture_locs_idx = findall(diff(z_points).== 0)[.~lenses]
 end
 
-# ╔═╡ 239c6992-08a4-41d6-81db-e508856a9f80
-function plotting(i,j)
-	fig1 =heatmap(grating_1st_mill_depths, grating_1st_mill_depths, prod_sums[i, j, :, :];
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="3rd Grating Mill Depth (Å)",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)   
-	
-	fig2 = heatmap(grating_1st_mill_depths, grating_1st_mill_depths, (ratios[i, j, :, :]);
-	    xlabel="1st Grating Mill Depth (Å)",
-	    ylabel="",
-	    title="",
-	    colorbar_title="",
-	    aspect_ratio=1,
-	    xlims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths)),
-	    ylims=(minimum(grating_1st_mill_depths), maximum(grating_1st_mill_depths))
-	)
-	# plot!(fig2, grating_1st_mill_depths, grating_1st_mill_depths, 
-	#     label="", color=:black
-	# )  
-	 
-	plot(fig1, fig2, layout=(1,2), size=(900,600),
-		title="w/ $(round(phase_shifts[i]/π, digits=2))π phase shift \n and $(round(x_apexes[j]*100, digits=2))% blazed" )
+# ╔═╡ 2d6d2b48-7e06-4fa8-a807-5d28c230f669
+output = simplify.(test_func(fs,ds,x_cutoffs))
+
+# ╔═╡ 6c278995-ccbb-4d88-82e6-432d80df64d2
+output[1,2]
+
+# ╔═╡ c4ea09a4-c1ff-4fa2-843a-6d48bd6daf85
+function beam_interception(x_series::AbstractVector{<:Real}, 
+						  x_cutoffs::Vector{<:Real},
+						  aperture_locs_idx)
+	beam_clipped = false
+	idx_violation = 1
+	for (i,x_cutoff) in enumerate(x_cutoffs)
+		    if abs(x_series[aperture_locs_idx][i]) > x_cutoff
+				beam_clipped = true
+				idx_violation = i
+				break
+			end
+		end
+	return beam_clipped, aperture_locs_idx[idx_violation]
 end
 
-# ╔═╡ ba5236af-6113-49de-8076-6780da204abd
+# ╔═╡ 83a473d8-707e-4238-99db-d9c7bd29ff3b
+function max_input_theta(θs,As::Vector{Element})
+	θ_low, θ_high = 0., maximum(θs)*0.1
+	Δθ = θ_high - θ_low
+	norm_Δθ = Δθ/maximum(θs)
+	while norm_Δθ >= 0.01
+		x_series = propagate_single_state(As, [0,θ_high])
+		hit_aperture, _ = beam_interception(x_series, x_cutoffs, aperture_locs_idx)
+		if !hit_aperture
+			θ_low = θ_high
+			θ_high += Δθ
+		else
+			θ_high -=Δθ/2
+			Δθ = θ_high - θ_low
+			norm_Δθ = Δθ/maximum(θs)
+		end
+	end
+	return θ_low
+end
 
-@bind i_slider PlutoUI.Slider(1:1:length(phase_shifts), default=1)
+# ╔═╡ 32dbd072-a011-4bb2-867b-6d735c62f55d
+max_input_theta(θs, operator)
 
+# ╔═╡ 334718ca-50a1-405c-98dc-8b8ba65ba992
+function plot_lenses!(fig, z_points; lens_w=0.015, lens_h=1.)
+	function ellipse_shape(x0, y0, a, b; n=200)
+	    t = range(0, 2π; length=n)
+	    xs = x0 .+ a .* cos.(t)
+	    ys = y0 .+ b .* sin.(t)
+	    Shape(xs, ys)
+	end
 
-# ╔═╡ a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-@bind j_slider PlutoUI.Slider(1:1:length(x_apexes), default=1)
-
-# ╔═╡ 8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-plotting(i_slider, j_slider)
-
-# ╔═╡ e024340e-bd01-4472-8005-7a1dcf8a9306
-function bar_graph(ks, N, p, x_apex, 
-				   phase_shift, mill_depths, 
-				   mode_blocking=true;α=0.008, kwards...)
 	
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	
-	
-	t1 = transmission_func(g1, false; α=α)
-	t3 = transmission_func(g2, false; α=α)
-	
-	# println("real-space: \n",sum(abs2, t1), "\n", sum(abs2, t3))
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-	# println("k-space: \n",sum(abs2, t1st_fft)/N, "\n", sum(abs2, t3rd_fft)/N)
+	lens_width = maximum(xlims(fig))*lens_w
+	lens_height = maximum(ylims(fig))*lens_h
+	lens_locs = z_points[findall(diff(z_points).== 0)[lenses]]
+	for lens_loc in lens_locs
+		plot!(ellipse_shape(lens_loc, 0,
+							lens_width, lens_height),
+		  opacity=0.25, line=(1, :black), color=:black, label="")
+	end
+	return nothing
+end
 
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0
-		t1st_fft[mask.>ctr+1] .= 0
-		# println(sum(abs2, t1st_fft))
+# ╔═╡ 64e39c80-e620-4b0c-bc43-8ce0f9c0640d
+function plot_apertures!(fig, z_points, x_cutoffs; aperture_w=0.001, aperture_h=1.)
+	
+	rect_shape(x, y, w, h, x_cutoff) = Shape(x .+ [0, w, w, 0], 
+							y .+ sign(x_cutoff).*abs.([x_cutoff, x_cutoff, h, h]))
+	
+
+	aperture_width = maximum(xlims(fig))*aperture_w
+	aperture_height = maximum(ylims(fig))*aperture_h
+	aperture_locs = z_points[findall(diff(z_points).== 0)[.~lenses]]
+	for (i,aperture_loc) in enumerate(aperture_locs)
+
+		if x_cutoffs[i]>aperture_height
+			continue
+		end
+		plot!(rect_shape(aperture_loc, 0,
+							aperture_width, aperture_height, x_cutoffs[i]),
+		  opacity=1, line=(1, :black), color=:black, label="")
+			plot!(rect_shape(aperture_loc, 0,
+							aperture_width, aperture_height, -x_cutoffs[i]),
+		  opacity=1, line=(1, :black), color=:black, label="")
 		
 	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-	# println(sum(abs2, t1st_fft))
+	return nothing
+end
+
+# ╔═╡ a88cf191-4880-453e-a84f-71b90d97d0dc
+begin
 	
-	# println("k-space: \n",sum(abs2, t1st_fft), "\n", sum(abs2, c_t3))
-	
-	t_2nd[ctr+1] = cis(phase_shift)
-	# t_2nd[ctr]
-	
-	ccs = zeros(ComplexF64, length(ks))
-	for (i,w) in enumerate(ks)
+
+	fig1 = plot()
+	for x_series in x_points
+		#looping through each beam i
 		
-		ccs[i] = cross_correlation_FC(c_t3, t1st_fft, t_2nd, w)
+		
+		hit_aperture, idx = beam_interception(x_series, x_cutoffs, aperture_locs_idx)
+		
+		if ~hit_aperture
+			plot!(fig1,z_points, x_series ;
+			 color=:green, label="", linewidth=1,
+			 opacity=1.0)
+		else
+			idx = idx + 1 #+1 to include beam hitting ap
+			plot!(fig1,z_points[1:idx], x_series[1:idx] ;
+			 color=:green, label="", linewidth=1,
+			 opacity=1.0)
+		end
+			
+		
 	end
-	println(sum(abs2.(ccs)))
-	bar(ks, abs2.(ccs); kwards...)
+	
+	# poly = Shape([0, 1, 1.5, 0.2], [2, 0.5, 0.0, -0.2])
+	# plot!(poly, opacity=0.3, label="")
+	
+	
+	plot_lenses!(fig1,z_points; lens_w=0.01, lens_h=1)
+	plot_apertures!(fig1, z_points, x_cutoffs; aperture_w=0.001, aperture_h=1)
+	x_ticks = unique(z_points)
+	plot!(xticks=(x_ticks, x_ticks))
+	plot(fig1)
 end
 
-# ╔═╡ db9cf8e6-0810-46c0-8890-3ffd3f648bdf
+# ╔═╡ 222c1f5d-e4b5-4843-9013-09a9165cfe15
+x_points[1]
 
+# ╔═╡ 88a4c77e-bf58-4f25-a7d9-2ddf579c6e69
+println(findfirst(x->any(abs(x).> x_cutoffs) , x_points[1][aperture_locs_idx]))
 
-# ╔═╡ dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-@bind phase_slider PlutoUI.Slider(phase_shifts, default=phase_shifts[1])
-
-# ╔═╡ d044989b-06d0-4e7b-a62d-88edc0c46867
-begin
-	ks = collect(-10:1:10)
-	x_apex = 0.5
-	println(phase_slider)
-	bar_graph(ks,N,p,x_apex,phase_slider,[70,190],true; ylims=(0,0.63))
-end
-
-# ╔═╡ 1decf6b8-a62e-494b-9326-225c38b36bb3
-function FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	g1 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[1])
-	g2 = blazed_grating_1d(N, p, x_apex; thickness=500, 							mill_depth=mill_depths[2])
-	
-	g2_shift = -floor(Int, x_apex * ((N÷p)-1) ) - 2
-    g2 = circshift(g2, g2_shift)
-	absorption = 0.008
-	t1 = transmission_func(g1, false, α=absorption)
-	t3 = transmission_func(g2, false, α=absorption)
-	
-
-	t1st_fft = fftshift(fft(ifftshift(t1)))
-	t3rd_fft = fftshift(fft(ifftshift(t3)))
-	c_t3 = t3rd_fft./N
-
-	if mode_blocking
-		mask = collect(1:1:N)
-		t1st_fft[mask.<ctr] .= 0	
-		t1st_fft[mask.>ctr+1] .= 0	
-
+# ╔═╡ 494321da-7d39-4286-bc11-d92b906cf4ce
+for (i,x_cutoff) in enumerate(x_cutoffs)
+    if abs(x_points[1][aperture_locs_idx][i]) > x_cutoff
+		println(i, " break")
+		break
 	end
-	t1st_fft ./=sqrt(sum(abs2, t1st_fft))
-
-	return t1st_fft, c_t3, abs.(t1.*c_t3)
-end
-
-# ╔═╡ b618de85-827f-4f86-8939-7e52bc509600
-function FC_matrix(Ms, mill_depths, x_apex)
-
-	c_t1, c_t3, r_prod = FC_matrix_setup(mill_depths, x_apex; mode_blocking=true)
-	c_matrix = Matrix{ComplexF64}(undef, length(Ms), length(Ms))
-
-	
-	for (i,m) in enumerate(Ms)
-		c_t3_shifted = circshift(c_t3, -m)
-		c_matrix[i,:] = c_t3_shifted[Ms.+ctr] .* c_t1[Ms.+ctr] 
-		# c_matrix[i,length(Ms)÷2+1] *= cis(4.29902152596498) 
-	end
-	return c_matrix
-end
-
-# ╔═╡ 0b273ca7-4f99-4db9-91b5-b615ac6ace19
-begin
-	M = 9
-	ctr_M = M÷2 + 1
-	Ms = collect(1:M) .- ctr_M
-	
-	c_matrix = FC_matrix(Ms, [70,190], 0.5)
-	fig_c_matrix = heatmap(Ms, Ms, abs.(c_matrix),
-		   	xticks=(Ms,(Ms)),
-			yticks=(Ms,Ms)
-	)
-	println(sum(abs2,(sum(c_matrix, dims=2))))
-	fig2_c_matrix = bar(Ms, abs2.(sum(c_matrix, dims=2)),
-						xticks=(Ms,Ms),
-					   ylims=(0,0.63)
-					   )
-	plot(fig_c_matrix, fig2_c_matrix, layout=(1,2), size=(900,400))
-end
-
-# ╔═╡ f713a74b-43fd-4721-973e-c21e8d1bacf7
-@bind vec_slider PlutoUI.Slider(1:1:10, default=1)
-
-# ╔═╡ 936d80c4-e14f-4ee5-ab0a-bf7981483bad
-begin
-	result = eigen(c_matrix) 
-
-	println("Eigenvalues:", round.(abs.(result.values), digits=8), "\n", 
-			round.(angle.(result.values), digits=2))
-	println("Eigenvalues:", round.(abs.(result.values[vec_slider]), digits=4), "\n", 
-			round.(angle.(result.values[vec_slider]), digits=2))
-	println("Eigenvectors:")
-	# display(round.(abs.(result.vectors[:,vec_slider]),digits=3))
-	# display(round.(angle.(result.vectors[:,vec_slider]),digits=3))
-	# display(Ms)
-	
-end
-
-# ╔═╡ 061a0e13-6de3-4484-a227-b7e1656e3744
-begin
-	
-	fig1 = heatmap(Ms.+ctr_M, Ms, abs.(result.vectors), aspect_ratio=1,
-					xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms),
-				  	xlabel="Eigenvector"
-				  )
-	fig2 = heatmap(Ms.+ctr_M, Ms, angle.(result.vectors), aspect_ratio=1,
-				  	xticks = (Ms.+ctr_M, Ms.+ctr_M),
-				   	yticks = (Ms, Ms)
-				  )
-	plot(fig1, fig1, layout=(1,2), size=(900,500))
-end
-
-# ╔═╡ d59c2734-22aa-4414-8783-ce1b7005bf60
-begin
-	
-	t2_test = ones(ComplexF64, length(Ms))
-	
-	dot_product_λs = zeros(length(phase_shifts), length(Ms))
-	dp_output = zeros(length(phase_shifts))
-	for (i,θ) in enumerate(phase_shifts)
-		t2_test[ctr_M+1] = cis(θ)
-		dot_product =
-			result.vectors*diagm(result.values)*inv(result.vectors)*t2_test
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		dp_output[i] = abs2(sum(dot_product[ctr_M-1,:]))
-		# t2_t)est[ctr_M+1] = cis(θ)
-		# dot_product = sum(
-		# 		result.vectors.*t2_test,dims=1)
-		# dot_product .*= result.values'.*result.vectors[ctr_M-1, :]'
-		# dot_product_λs[i,:] = abs.(dot_product)
-		# dp_output[i] = abs2(sum(dot_product))
-	end
-	# dot_product .*=result.values[1].*result.vectors[1,ctr_M-1]
-	plot(phase_shifts,
-		 dot_product_λs[:,1]
-		)
-	plot!(phase_shifts, 
-		  dot_product_λs[:,end]
-		 )
-	plot!(phase_shifts, 
-		 dp_output
-		 )
-	vline!([1.9841637812146062])
-	
-	
-end
-
-# ╔═╡ 22274477-32f9-4aff-b410-8e345d0977a6
-F = svd(c_matrix);
-
-# ╔═╡ 12944ad3-df9e-4aaf-8bb9-08c5972145ef
-begin
-	fig1_F = heatmap(Ms, Ms,abs2.(F.U),
-					 colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_F = heatmap(Ms, Ms,log.(1 .+(abs.(diagm(F.S))))
-					)
-	fig3_F = heatmap(Ms, Ms, abs2.(F.Vt),
-					 colorbar=false
-					)
-	println(F.S[1:4])
-	println(F.S[1:4]./F.S[1])
-	plot(fig1_F, fig2_F, fig3_F, layout=(1,3), size=(1200,500))
-end
-
-# ╔═╡ 9d59f49a-2da0-4955-801f-a3c91cdc3576
-F_QR = qr(c_matrix)
-
-# ╔═╡ e69ed969-232c-4f3e-bc26-939afa79f11d
-begin
-	fig1_Fqr = heatmap(Ms, Ms,(abs.(F_QR.Q)),
-					 # colorbar=false,
-					 yticks=(Ms,Ms)
-					)
-	fig2_Fqr = heatmap(Ms, Ms,(abs.(F_QR.R))
-					)
-	
-	plot(fig1_Fqr, fig2_Fqr, layout=(1,2), size=(1200,500))
+	println(i)
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
-LaTeXStrings = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
-PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 
 [compat]
-LaTeXStrings = "~1.4.0"
 Plots = "~1.41.1"
-PlutoUI = "~0.7.75"
+Symbolics = "~7.5.0"
 """
 
 # ╔═╡ 00000000-0000-0000-0000-000000000002
@@ -440,13 +303,68 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.11.2"
 manifest_format = "2.0"
-project_hash = "77f0f2e262733f86d665b16f9db911d504877d02"
+project_hash = "9b57bf777de3ec0d067e89384dd15f61ac1728b2"
+
+[[deps.ADTypes]]
+git-tree-sha1 = "f7304359109c768cf32dc5fa2d371565bb63b68a"
+uuid = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+version = "1.21.0"
+
+    [deps.ADTypes.extensions]
+    ADTypesChainRulesCoreExt = "ChainRulesCore"
+    ADTypesConstructionBaseExt = "ConstructionBase"
+    ADTypesEnzymeCoreExt = "EnzymeCore"
+
+    [deps.ADTypes.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    ConstructionBase = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+    EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
 
 [[deps.AbstractPlutoDingetjes]]
 deps = ["Pkg"]
 git-tree-sha1 = "6e1d2a35f2f90a4bc7c2ed98079b2ba09c35b83a"
 uuid = "6e696c72-6542-2067-7265-42206c756150"
 version = "1.3.2"
+
+[[deps.AbstractTrees]]
+git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
+uuid = "1520ce14-60c1-5f80-bbc7-55ef81b5835c"
+version = "0.4.5"
+
+[[deps.Accessors]]
+deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
+git-tree-sha1 = "856ecd7cebb68e5fc87abecd2326ad59f0f911f3"
+uuid = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
+version = "0.1.43"
+
+    [deps.Accessors.extensions]
+    AxisKeysExt = "AxisKeys"
+    IntervalSetsExt = "IntervalSets"
+    LinearAlgebraExt = "LinearAlgebra"
+    StaticArraysExt = "StaticArrays"
+    StructArraysExt = "StructArrays"
+    TestExt = "Test"
+    UnitfulExt = "Unitful"
+
+    [deps.Accessors.weakdeps]
+    AxisKeys = "94b1ba4f-4ee9-5380-92f1-94cde586c3c5"
+    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
+    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[[deps.Adapt]]
+deps = ["LinearAlgebra", "Requires"]
+git-tree-sha1 = "7e35fca2bdfba44d797c53dfe63a51fabf39bfc0"
+uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+version = "4.4.0"
+weakdeps = ["SparseArrays", "StaticArrays"]
+
+    [deps.Adapt.extensions]
+    AdaptSparseArraysExt = "SparseArrays"
+    AdaptStaticArraysExt = "StaticArrays"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -458,6 +376,40 @@ version = "1.1.3"
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
 version = "1.1.2"
 
+[[deps.ArrayInterface]]
+deps = ["Adapt", "LinearAlgebra"]
+git-tree-sha1 = "d81ae5489e13bc03567d4fbbb06c546a5e53c857"
+uuid = "4fba245c-0d91-5ea0-9b3e-6abc04ee57a9"
+version = "7.22.0"
+
+    [deps.ArrayInterface.extensions]
+    ArrayInterfaceBandedMatricesExt = "BandedMatrices"
+    ArrayInterfaceBlockBandedMatricesExt = "BlockBandedMatrices"
+    ArrayInterfaceCUDAExt = "CUDA"
+    ArrayInterfaceCUDSSExt = ["CUDSS", "CUDA"]
+    ArrayInterfaceChainRulesCoreExt = "ChainRulesCore"
+    ArrayInterfaceChainRulesExt = "ChainRules"
+    ArrayInterfaceGPUArraysCoreExt = "GPUArraysCore"
+    ArrayInterfaceMetalExt = "Metal"
+    ArrayInterfaceReverseDiffExt = "ReverseDiff"
+    ArrayInterfaceSparseArraysExt = "SparseArrays"
+    ArrayInterfaceStaticArraysCoreExt = "StaticArraysCore"
+    ArrayInterfaceTrackerExt = "Tracker"
+
+    [deps.ArrayInterface.weakdeps]
+    BandedMatrices = "aae01518-5342-5314-be14-df237901396f"
+    BlockBandedMatrices = "ffab5731-97b5-5995-9138-79e8c1846df0"
+    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+    CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
+    ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
+    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+    ReverseDiff = "37e2e3b7-166d-5795-8a7a-e32c996b4267"
+    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+    StaticArraysCore = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+    Tracker = "9f7883ad-71c0-57eb-9f7f-b5c9e6d3789c"
+
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 version = "1.11.0"
@@ -465,6 +417,11 @@ version = "1.11.0"
 [[deps.Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 version = "1.11.0"
+
+[[deps.Bijections]]
+git-tree-sha1 = "a2d308fcd4c2fb90e943cf9cd2fbfa9c32b69733"
+uuid = "e2ed5e7c-b2de-5872-ae92-c73ca462fb04"
+version = "0.2.2"
 
 [[deps.BitFlags]]
 git-tree-sha1 = "0691e34b3bb8be9307330f88d1a3c3f25466c24d"
@@ -510,12 +467,10 @@ deps = ["ColorTypes", "FixedPointNumbers", "LinearAlgebra", "Requires", "Statist
 git-tree-sha1 = "8b3b6f87ce8f65a2b4f857528fd8d70086cd72b1"
 uuid = "c3611d14-8923-5661-9e6a-0046d554d3a4"
 version = "0.11.0"
+weakdeps = ["SpecialFunctions"]
 
     [deps.ColorVectorSpace.extensions]
     SpecialFunctionsExt = "SpecialFunctions"
-
-    [deps.ColorVectorSpace.weakdeps]
-    SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
 [[deps.Colors]]
 deps = ["ColorTypes", "FixedPointNumbers", "Reexport"]
@@ -523,16 +478,51 @@ git-tree-sha1 = "37ea44092930b1811e666c3bc38065d7d87fcc74"
 uuid = "5ae59095-9a9b-59fe-a467-6f913c188581"
 version = "0.13.1"
 
+[[deps.Combinatorics]]
+git-tree-sha1 = "08c8b6831dc00bfea825826be0bc8336fc369860"
+uuid = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+version = "1.0.2"
+
+[[deps.CommonWorldInvalidations]]
+git-tree-sha1 = "ae52d1c52048455e85a387fbee9be553ec2b68d0"
+uuid = "f70d9fcc-98c5-4d4a-abd7-e4cdeebd8ca8"
+version = "1.0.0"
+
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
 version = "1.1.1+0"
+
+[[deps.CompositeTypes]]
+git-tree-sha1 = "bce26c3dab336582805503bed209faab1c279768"
+uuid = "b152e2b5-7a66-4b01-a709-34e65c35f657"
+version = "0.1.4"
+
+[[deps.CompositionsBase]]
+git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
+uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
+version = "0.1.2"
+weakdeps = ["InverseFunctions"]
+
+    [deps.CompositionsBase.extensions]
+    CompositionsBaseInverseFunctionsExt = "InverseFunctions"
 
 [[deps.ConcurrentUtilities]]
 deps = ["Serialization", "Sockets"]
 git-tree-sha1 = "d9d26935a0bcffc87d2613ce14c527c99fc543fd"
 uuid = "f0e56b4a-5159-44fe-b623-3e5288b988bb"
 version = "2.5.0"
+
+[[deps.ConstructionBase]]
+git-tree-sha1 = "b4b092499347b18a015186eae3042f72267106cb"
+uuid = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+version = "1.6.0"
+weakdeps = ["IntervalSets", "LinearAlgebra", "StaticArrays"]
+
+    [deps.ConstructionBase.extensions]
+    ConstructionBaseIntervalSetsExt = "IntervalSets"
+    ConstructionBaseLinearAlgebraExt = "LinearAlgebra"
+    ConstructionBaseStaticArraysExt = "StaticArrays"
 
 [[deps.Contour]]
 git-tree-sha1 = "439e35b0b36e2e5881738abc8857bd92ad6ff9a8"
@@ -567,15 +557,46 @@ git-tree-sha1 = "9e2f36d3c96a820c678f2f1f1782582fcf685bae"
 uuid = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 version = "1.9.1"
 
+[[deps.DiffRules]]
+deps = ["IrrationalConstants", "LogExpFunctions", "NaNMath", "Random", "SpecialFunctions"]
+git-tree-sha1 = "23163d55f885173722d1e4cf0f6110cdbaf7e272"
+uuid = "b552c78f-8df3-52c6-915a-8e097449b14b"
+version = "1.15.1"
+
 [[deps.DocStringExtensions]]
 git-tree-sha1 = "7442a5dfe1ebb773c29cc2962a8980f47221d76c"
 uuid = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 version = "0.9.5"
 
+[[deps.DomainSets]]
+deps = ["CompositeTypes", "IntervalSets", "LinearAlgebra", "StaticArrays"]
+git-tree-sha1 = "c249d86e97a7e8398ce2068dce4c078a1c3464de"
+uuid = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
+version = "0.7.16"
+
+    [deps.DomainSets.extensions]
+    DomainSetsMakieExt = "Makie"
+    DomainSetsRandomExt = "Random"
+
+    [deps.DomainSets.weakdeps]
+    Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+    Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
 [[deps.Downloads]]
 deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
 uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.6.0"
+
+[[deps.DynamicPolynomials]]
+deps = ["Future", "LinearAlgebra", "MultivariatePolynomials", "MutableArithmetics", "Reexport", "Test"]
+git-tree-sha1 = "3f50fa86c968fc1a9e006c07b6bc40ccbb1b704d"
+uuid = "7c1d4256-1411-5781-91ec-d7bc3513ac07"
+version = "0.6.4"
+
+[[deps.EnumX]]
+git-tree-sha1 = "bddad79635af6aec424f53ed8aad5d7555dc6f00"
+uuid = "4e289a0a-7415-4d19-859d-a7e5c4648b56"
+version = "1.0.5"
 
 [[deps.EpollShim_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -594,6 +615,16 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "27af30de8b5445644e8ffe3bcb0d72049c089cf1"
 uuid = "2e619515-83b5-522b-bb60-26c02a35a201"
 version = "2.7.3+0"
+
+[[deps.ExprTools]]
+git-tree-sha1 = "27415f162e6028e81c72b82ef756bf321213b6ec"
+uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
+version = "0.1.10"
+
+[[deps.ExproniconLite]]
+git-tree-sha1 = "c13f0b150373771b0fdc1713c97860f8df12e6c2"
+uuid = "55351af7-c7e9-48d6-89ff-24e801d99491"
+version = "0.10.14"
 
 [[deps.FFMPEG]]
 deps = ["FFMPEG_jll"]
@@ -639,6 +670,11 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "7a214fdac5ed5f59a22c2d9a885a16da1c74bbc7"
 uuid = "559328eb-81f9-559d-9380-de523a88c83c"
 version = "1.0.17+0"
+
+[[deps.Future]]
+deps = ["Random"]
+uuid = "9fa8497b-333b-5362-9e8d-4d0656e87820"
+version = "1.11.0"
 
 [[deps.GLFW_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Libglvnd_jll", "Xorg_libXcursor_jll", "Xorg_libXi_jll", "Xorg_libXinerama_jll", "Xorg_libXrandr_jll", "libdecor_jll", "xkbcommon_jll"]
@@ -705,28 +741,36 @@ git-tree-sha1 = "f923f9a774fcf3f5cb761bfa43aeadd689714813"
 uuid = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
 version = "8.5.1+0"
 
-[[deps.Hyperscript]]
-deps = ["Test"]
-git-tree-sha1 = "179267cfa5e712760cd43dcae385d7ea90cc25a4"
-uuid = "47d2ed2b-36de-50cf-bf87-49c2cf4b8b91"
-version = "0.0.5"
-
-[[deps.HypertextLiteral]]
-deps = ["Tricks"]
-git-tree-sha1 = "7134810b1afce04bbc1045ca1985fbe81ce17653"
-uuid = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
-version = "0.9.5"
-
-[[deps.IOCapture]]
-deps = ["Logging", "Random"]
-git-tree-sha1 = "0ee181ec08df7d7c911901ea38baf16f755114dc"
-uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
-version = "1.0.0"
+[[deps.IntegerMathUtils]]
+git-tree-sha1 = "4c1acff2dc6b6967e7e750633c50bc3b8d83e617"
+uuid = "18e54dd8-cb9d-406c-a71d-865a43cbb235"
+version = "0.1.3"
 
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 version = "1.11.0"
+
+[[deps.IntervalSets]]
+git-tree-sha1 = "d966f85b3b7a8e49d034d27a189e9a4874b4391a"
+uuid = "8197267c-284f-5f27-9208-e0e47529a953"
+version = "0.7.13"
+weakdeps = ["Random", "RecipesBase", "Statistics"]
+
+    [deps.IntervalSets.extensions]
+    IntervalSetsRandomExt = "Random"
+    IntervalSetsRecipesBaseExt = "RecipesBase"
+    IntervalSetsStatisticsExt = "Statistics"
+
+[[deps.InverseFunctions]]
+git-tree-sha1 = "a779299d77cd080bf77b97535acecd73e1c5e5cb"
+uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
+version = "0.1.17"
+weakdeps = ["Dates", "Test"]
+
+    [deps.InverseFunctions.extensions]
+    InverseFunctionsDatesExt = "Dates"
+    InverseFunctionsTestExt = "Test"
 
 [[deps.IrrationalConstants]]
 git-tree-sha1 = "b2d91fe939cae05960e760110b328288867b5758"
@@ -756,6 +800,12 @@ version = "1.3.0"
 
     [deps.JSON.weakdeps]
     ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
+
+[[deps.Jieko]]
+deps = ["ExproniconLite"]
+git-tree-sha1 = "2f05ed29618da60c06a87e9c033982d4f71d0b6c"
+uuid = "ae98c720-c025-4a4a-838c-29b094483192"
+version = "0.2.1"
 
 [[deps.JpegTurbo_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -906,11 +956,6 @@ git-tree-sha1 = "f00544d95982ea270145636c181ceda21c4e2575"
 uuid = "e6f89c97-d47a-5376-807f-9c37f3926c36"
 version = "1.2.0"
 
-[[deps.MIMEs]]
-git-tree-sha1 = "c64d943587f7187e751162b3b84445bbbd79f691"
-uuid = "6c6e2e6c-3030-632d-7369-2d6c69616d65"
-version = "1.1.0"
-
 [[deps.MacroTools]]
 git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
 uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
@@ -947,9 +992,33 @@ version = "1.2.0"
 uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 version = "1.11.0"
 
+[[deps.Moshi]]
+deps = ["ExproniconLite", "Jieko"]
+git-tree-sha1 = "53f817d3e84537d84545e0ad749e483412dd6b2a"
+uuid = "2e0e35c7-a2e4-4343-998d-7ef72827ed2d"
+version = "0.3.7"
+
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
 version = "2023.12.12"
+
+[[deps.MultivariatePolynomials]]
+deps = ["DataStructures", "LinearAlgebra", "MutableArithmetics"]
+git-tree-sha1 = "d38b8653b1cdfac5a7da3b819c0a8d6024f9a18c"
+uuid = "102ac46a-7ee4-5c85-9060-abc95bfdeaa3"
+version = "0.5.13"
+
+    [deps.MultivariatePolynomials.extensions]
+    MultivariatePolynomialsChainRulesCoreExt = "ChainRulesCore"
+
+    [deps.MultivariatePolynomials.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+
+[[deps.MutableArithmetics]]
+deps = ["LinearAlgebra", "SparseArrays", "Test"]
+git-tree-sha1 = "22df8573f8e7c593ac205455ca088989d0a2c7a0"
+uuid = "d8a4904e-b15c-11e9-3269-09a3773c0cb0"
+version = "1.6.7"
 
 [[deps.NaNMath]]
 deps = ["OpenLibm_jll"]
@@ -988,6 +1057,12 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "f19301ae653233bc88b1810ae908194f07f8db9d"
 uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
 version = "3.5.4+0"
+
+[[deps.OpenSpecFun_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "1346c9208249809840c91b26703912dff463d335"
+uuid = "efe28fd5-8261-553b-a9e1-b2916fc3738e"
+version = "0.5.6+0"
 
 [[deps.Opus_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1064,12 +1139,6 @@ version = "1.41.1"
     ImageInTerminal = "d8c32880-2388-543b-8c61-d9f865259254"
     Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
-[[deps.PlutoUI]]
-deps = ["AbstractPlutoDingetjes", "Base64", "ColorTypes", "Dates", "Downloads", "FixedPointNumbers", "Hyperscript", "HypertextLiteral", "IOCapture", "InteractiveUtils", "JSON", "Logging", "MIMEs", "Markdown", "Random", "Reexport", "URIs", "UUIDs"]
-git-tree-sha1 = "db8a06ef983af758d285665a0398703eb5bc1d66"
-uuid = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
-version = "0.7.75"
-
 [[deps.PrecompileTools]]
 deps = ["Preferences"]
 git-tree-sha1 = "5aa36f7049a63a1528fe8f7c3f2113413ffd4e1f"
@@ -1081,6 +1150,12 @@ deps = ["TOML"]
 git-tree-sha1 = "0f27480397253da18fe2c12a4ba4eb9eb208bf3d"
 uuid = "21216c6a-2e73-6563-6e65-726566657250"
 version = "1.5.0"
+
+[[deps.Primes]]
+deps = ["IntegerMathUtils"]
+git-tree-sha1 = "25cdd1d20cd005b52fc12cb6be3f75faaf59bb9b"
+uuid = "27ebfcd6-29c5-5fa9-bf4b-fb8fc14df3ae"
+version = "0.5.7"
 
 [[deps.Printf]]
 deps = ["Unicode"]
@@ -1126,6 +1201,11 @@ deps = ["SHA"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 version = "1.11.0"
 
+[[deps.ReadOnlyArrays]]
+git-tree-sha1 = "e6f7ddf48cf141cb312b078ca21cb2d29d0dc11d"
+uuid = "988b38a3-91fc-5605-94a2-ee2116b3bd83"
+version = "0.2.0"
+
 [[deps.RecipesBase]]
 deps = ["PrecompileTools"]
 git-tree-sha1 = "5c3d09cc4f31f5fc6af001c250bf1278733100ff"
@@ -1155,9 +1235,20 @@ git-tree-sha1 = "62389eeff14780bfe55195b7204c0d8738436d64"
 uuid = "ae029012-a4dd-5104-9daa-d747884805df"
 version = "1.3.1"
 
+[[deps.RuntimeGeneratedFunctions]]
+deps = ["ExprTools", "SHA", "Serialization"]
+git-tree-sha1 = "2f609ec2295c452685d3142bc4df202686e555d2"
+uuid = "7e49a35a-f44a-4d26-94aa-eba1b4ca6b47"
+version = "0.5.16"
+
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
+
+[[deps.SciMLPublic]]
+git-tree-sha1 = "0ba076dbdce87ba230fff48ca9bca62e1f345c9b"
+uuid = "431bcebd-1456-4ced-9d72-93c2757fff0b"
+version = "1.0.1"
 
 [[deps.Scratch]]
 deps = ["Dates"]
@@ -1168,6 +1259,12 @@ version = "1.3.0"
 [[deps.Serialization]]
 uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 version = "1.11.0"
+
+[[deps.Setfield]]
+deps = ["ConstructionBase", "Future", "MacroTools", "StaticArraysCore"]
+git-tree-sha1 = "c5391c6ace3bc430ca630251d02ea9687169ca68"
+uuid = "efcf1570-3423-57d1-acb7-fd33fddbac46"
+version = "1.1.2"
 
 [[deps.Showoff]]
 deps = ["Dates", "Grisu"]
@@ -1195,11 +1292,42 @@ deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
 uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 version = "1.11.0"
 
+[[deps.SpecialFunctions]]
+deps = ["IrrationalConstants", "LogExpFunctions", "OpenLibm_jll", "OpenSpecFun_jll"]
+git-tree-sha1 = "f2685b435df2613e25fc10ad8c26dddb8640f547"
+uuid = "276daf66-3868-5448-9aa4-cd146d93841b"
+version = "2.6.1"
+
+    [deps.SpecialFunctions.extensions]
+    SpecialFunctionsChainRulesCoreExt = "ChainRulesCore"
+
+    [deps.SpecialFunctions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+
 [[deps.StableRNGs]]
 deps = ["Random"]
 git-tree-sha1 = "4f96c596b8c8258cc7d3b19797854d368f243ddc"
 uuid = "860ef19b-820b-49d6-a774-d7a799459cd3"
 version = "1.0.4"
+
+[[deps.StaticArrays]]
+deps = ["LinearAlgebra", "PrecompileTools", "Random", "StaticArraysCore"]
+git-tree-sha1 = "eee1b9ad8b29ef0d936e3ec9838c7ec089620308"
+uuid = "90137ffa-7385-5640-81b9-e52037218182"
+version = "1.9.16"
+
+    [deps.StaticArrays.extensions]
+    StaticArraysChainRulesCoreExt = "ChainRulesCore"
+    StaticArraysStatisticsExt = "Statistics"
+
+    [deps.StaticArrays.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[[deps.StaticArraysCore]]
+git-tree-sha1 = "6ab403037779dae8c514bad259f32a447262455a"
+uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+version = "1.4.4"
 
 [[deps.Statistics]]
 deps = ["LinearAlgebra"]
@@ -1246,6 +1374,73 @@ deps = ["Artifacts", "Libdl", "libblastrampoline_jll"]
 uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
 version = "7.7.0+0"
 
+[[deps.SymbolicIndexingInterface]]
+deps = ["Accessors", "ArrayInterface", "RuntimeGeneratedFunctions", "StaticArraysCore"]
+git-tree-sha1 = "94c58884e013efff548002e8dc2fdd1cb74dfce5"
+uuid = "2efcf032-c050-4f8e-a9bb-153293bab1f5"
+version = "0.3.46"
+
+    [deps.SymbolicIndexingInterface.extensions]
+    SymbolicIndexingInterfacePrettyTablesExt = "PrettyTables"
+
+    [deps.SymbolicIndexingInterface.weakdeps]
+    PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+
+[[deps.SymbolicLimits]]
+deps = ["SymbolicUtils", "TermInterface"]
+git-tree-sha1 = "49201c2793ce02f141c6f8b5194ce34e8012cd68"
+uuid = "19f23fe9-fdab-4a78-91af-e7b7767979c3"
+version = "0.2.4"
+
+[[deps.SymbolicUtils]]
+deps = ["AbstractTrees", "ArrayInterface", "Combinatorics", "ConstructionBase", "DataStructures", "DocStringExtensions", "DynamicPolynomials", "EnumX", "ExproniconLite", "LinearAlgebra", "MacroTools", "Moshi", "MultivariatePolynomials", "MutableArithmetics", "NaNMath", "PrecompileTools", "ReadOnlyArrays", "Setfield", "SparseArrays", "SpecialFunctions", "StaticArraysCore", "SymbolicIndexingInterface", "TaskLocalValues", "TermInterface", "WeakCacheSets"]
+git-tree-sha1 = "6e6232334e544dcf52df817977234337a4c0b428"
+uuid = "d1185830-fcd6-423d-90d6-eec64667417b"
+version = "4.10.1"
+
+    [deps.SymbolicUtils.extensions]
+    SymbolicUtilsChainRulesCoreExt = "ChainRulesCore"
+    SymbolicUtilsDistributionsExt = "Distributions"
+    SymbolicUtilsLabelledArraysExt = "LabelledArrays"
+    SymbolicUtilsReverseDiffExt = "ReverseDiff"
+
+    [deps.SymbolicUtils.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+    LabelledArrays = "2ee39098-c373-598a-b85f-a56591580800"
+    ReverseDiff = "37e2e3b7-166d-5795-8a7a-e32c996b4267"
+
+[[deps.Symbolics]]
+deps = ["ADTypes", "AbstractPlutoDingetjes", "ArrayInterface", "Bijections", "CommonWorldInvalidations", "ConstructionBase", "DataStructures", "DiffRules", "DocStringExtensions", "DomainSets", "DynamicPolynomials", "Libdl", "LinearAlgebra", "LogExpFunctions", "MacroTools", "Markdown", "Moshi", "MultivariatePolynomials", "MutableArithmetics", "NaNMath", "PrecompileTools", "Preferences", "Primes", "RecipesBase", "Reexport", "RuntimeGeneratedFunctions", "SciMLPublic", "Setfield", "SparseArrays", "SpecialFunctions", "StaticArraysCore", "SymbolicIndexingInterface", "SymbolicLimits", "SymbolicUtils", "TermInterface"]
+git-tree-sha1 = "d455b1839c5aaab7c51404e7fb5f12c0386b7f65"
+uuid = "0c5d862f-8b57-4792-8d23-62f2024744c7"
+version = "7.5.0"
+
+    [deps.Symbolics.extensions]
+    SymbolicsD3TreesExt = "D3Trees"
+    SymbolicsDistributionsExt = "Distributions"
+    SymbolicsForwardDiffExt = "ForwardDiff"
+    SymbolicsGroebnerExt = "Groebner"
+    SymbolicsLatexifyExt = ["Latexify", "LaTeXStrings"]
+    SymbolicsLuxExt = "Lux"
+    SymbolicsNemoExt = "Nemo"
+    SymbolicsPreallocationToolsExt = ["PreallocationTools", "ForwardDiff"]
+    SymbolicsSymPyExt = "SymPy"
+    SymbolicsSymPyPythonCallExt = "SymPyPythonCall"
+
+    [deps.Symbolics.weakdeps]
+    D3Trees = "e3df1716-f71e-5df9-9e2d-98e193103c45"
+    Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+    ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+    Groebner = "0b43b601-686d-58a3-8a1c-6623616c7cd4"
+    LaTeXStrings = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
+    Latexify = "23fbe1c1-3f47-55db-b15f-69d7ec21a316"
+    Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+    Nemo = "2edaba10-b0f1-5616-af89-8c11ac63239a"
+    PreallocationTools = "d236fae5-4411-538c-8e31-a6e3d9e00b46"
+    SymPy = "24249f21-da20-56a4-8eb1-6a02cf4ae2e6"
+    SymPyPythonCall = "bc8888f7-b21e-4b7c-a06a-5d9c9496438c"
+
 [[deps.TOML]]
 deps = ["Dates"]
 uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
@@ -1256,11 +1451,21 @@ deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
 
+[[deps.TaskLocalValues]]
+git-tree-sha1 = "67e469338d9ce74fc578f7db1736a74d93a49eb8"
+uuid = "ed4db957-447d-4319-bfb6-7fa9ae7ecf34"
+version = "0.1.3"
+
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
 git-tree-sha1 = "1feb45f88d133a655e001435632f019a9a1bcdb6"
 uuid = "62fd8b95-f654-4bbd-a8a5-9c27f68ccd50"
 version = "0.1.1"
+
+[[deps.TermInterface]]
+git-tree-sha1 = "d673e0aca9e46a2f63720201f55cc7b3e7169b16"
+uuid = "8ea1fca8-c5ef-4a55-8b96-4e9afe9c9a3c"
+version = "2.0.0"
 
 [[deps.Test]]
 deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
@@ -1271,11 +1476,6 @@ version = "1.11.0"
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 version = "0.11.3"
-
-[[deps.Tricks]]
-git-tree-sha1 = "311349fd1c93a31f783f977a71e8b062a57d4101"
-uuid = "410a4b4d-49e4-4fbc-ab6d-cb71b17b3775"
-version = "0.1.13"
 
 [[deps.URIs]]
 git-tree-sha1 = "bef26fb046d031353ef97a82e3fdb6afe7f21b1a"
@@ -1313,6 +1513,11 @@ deps = ["Artifacts", "EpollShim_jll", "Expat_jll", "JLLWrappers", "Libdl", "Libf
 git-tree-sha1 = "96478df35bbc2f3e1e791bc7a3d0eeee559e60e9"
 uuid = "a2964d1f-97da-50d4-b82a-358c7fce9d89"
 version = "1.24.0+0"
+
+[[deps.WeakCacheSets]]
+git-tree-sha1 = "386050ae4353310d8ff9c228f83b1affca2f7f38"
+uuid = "d30d5f5c-d141-4870-aa07-aabb0f5fe7d5"
+version = "0.1.0"
 
 [[deps.XZ_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1570,31 +1775,27 @@ version = "1.9.2+0"
 """
 
 # ╔═╡ Cell order:
-# ╠═815f51f6-c0c1-424f-bab3-e9dba64a0986
-# ╟─997a5d95-418f-40c4-8089-94bdfcd95487
-# ╟─58c2785d-f574-47b6-9da2-5ede814feae6
-# ╠═5b0a75a9-0944-4e78-8598-38fd4ff84ace
-# ╠═78d01afd-cca8-4056-8e0a-728105a0050d
-# ╟─8e5be95e-270a-4d0d-87cc-da6f51c64b47
-# ╠═a3b7bc29-0941-4d20-ae96-5bb298b23d85
-# ╠═239c6992-08a4-41d6-81db-e508856a9f80
-# ╠═ba5236af-6113-49de-8076-6780da204abd
-# ╠═a3dc4d4e-2122-44b5-ac5e-8bb2b9513083
-# ╠═8e1f89f7-7f6f-4b41-a0b7-5d2dbe8bbf5f
-# ╠═e024340e-bd01-4472-8005-7a1dcf8a9306
-# ╠═d044989b-06d0-4e7b-a62d-88edc0c46867
-# ╠═db9cf8e6-0810-46c0-8890-3ffd3f648bdf
-# ╠═dbbc2ddd-b08a-4c4e-99b5-f098b6e3b4f5
-# ╠═1decf6b8-a62e-494b-9326-225c38b36bb3
-# ╠═b618de85-827f-4f86-8939-7e52bc509600
-# ╠═0b273ca7-4f99-4db9-91b5-b615ac6ace19
-# ╠═f713a74b-43fd-4721-973e-c21e8d1bacf7
-# ╠═936d80c4-e14f-4ee5-ab0a-bf7981483bad
-# ╠═061a0e13-6de3-4484-a227-b7e1656e3744
-# ╠═d59c2734-22aa-4414-8783-ce1b7005bf60
-# ╠═22274477-32f9-4aff-b410-8e345d0977a6
-# ╠═12944ad3-df9e-4aaf-8bb9-08c5972145ef
-# ╠═9d59f49a-2da0-4955-801f-a3c91cdc3576
-# ╠═e69ed969-232c-4f3e-bc26-939afa79f11d
+# ╠═183d5ede-f8c8-11f0-33f6-15efc271ca20
+# ╠═09463c12-9196-47fe-9acc-85e57da176db
+# ╠═16e12235-9796-4b21-824b-11c83422e314
+# ╠═26c2d1f3-90b0-47ef-a2ec-1b62568032c2
+# ╠═13325be7-4d0b-4c3b-beb9-97728f57650f
+# ╠═73690b54-97e3-4401-af76-fc4c0061c00d
+# ╠═6eb6b350-94b5-4ebc-b027-39acadcd5baf
+# ╠═2d6d2b48-7e06-4fa8-a807-5d28c230f669
+# ╠═6c278995-ccbb-4d88-82e6-432d80df64d2
+# ╠═293f5f68-d535-492f-9934-9064fe290923
+# ╠═83a473d8-707e-4238-99db-d9c7bd29ff3b
+# ╠═32dbd072-a011-4bb2-867b-6d735c62f55d
+# ╟─c9214f07-6595-4d4c-a703-68a3d191eede
+# ╟─97d05287-2e7a-4606-84f0-e5f1b37afc6e
+# ╟─ebccca3d-2f41-4c06-9321-7e8a40176ab4
+# ╟─c4ea09a4-c1ff-4fa2-843a-6d48bd6daf85
+# ╟─334718ca-50a1-405c-98dc-8b8ba65ba992
+# ╟─64e39c80-e620-4b0c-bc43-8ce0f9c0640d
+# ╠═a88cf191-4880-453e-a84f-71b90d97d0dc
+# ╠═222c1f5d-e4b5-4843-9013-09a9165cfe15
+# ╠═88a4c77e-bf58-4f25-a7d9-2ddf579c6e69
+# ╠═494321da-7d39-4286-bc11-d92b906cf4ce
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
