@@ -126,7 +126,7 @@ end
 begin
 	θs = -2:0.2:2
 	rs = [[θ/10, θ] for θ in θs for x in -0.1:0.1:0.1]
-	rs = [[0, θ] for θ in θs for x in -0.1:0.1:0.1]
+	rs = [[0.0, θ] for θ in θs for x in -0.1:0.1:0.1]
 	operator = reverse([free_space(0.5),
 						thin_lens(0.5), free_space(0.5),
 						thin_lens(0.5), free_space(2),

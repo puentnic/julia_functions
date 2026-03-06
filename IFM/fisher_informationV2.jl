@@ -95,8 +95,11 @@ function sinusoidal(κ::Number, h::Real, d::Real;
 	xs = (0:N-1) ./ N                # N points, endpoint 1 is excluded
 	d0 = h - d
 	grating = @. (d/2)*(1 .+ sin.(2π*xs)) + d0
+	# grating = @. (d/2)*(1 .+ cos.(2π*xs)) + d0
 	trans_grating = @. cis(κ * grating)
-	t_fft = fftshift(fft(trans_grating))
+	# t_fft = fftshift(fft(trans_grating))
+	t_fft = fftshift(fft((trans_grating)))
+
 	if phase_shift
 	    @. t_fft *= cis(-Ns*π) 
 	end    
@@ -123,11 +126,12 @@ begin
 	
 		return α^2 + β^2
 	end
-	function ν_ℓ(ℓ, c3, c1, (Δd, Σd), κ)
+	function ν_ℓ(ℓ, c3, c1, (Δd, Σd), κ, B_noise)
 		local α = abs(α_ℓ(ℓ, c3, c1, (Δd, Σd), κ))
 		local β = abs(β_ℓ(ℓ, c3, c1, (Δd, Σd), κ))
-		
-		return 2 * α * β / (α^2 + β^2)
+
+		return 2 * α * β / (α^2 + β^2 + B_noise)
+		#return 2 * α * β / (α^2 + β^2) w/o background noise
 	end
 end
 
@@ -175,7 +179,9 @@ function sample_damage(c3::T, c1::T,
 
 	probe_zeroth = abs2(c1[ctr_N]) * exp(imag(κ) * (Δd - Σd))
 	probe_first = abs2(c1[ctr_N+1]) * exp(-imag(κ) * (Δd + Σd))
+	probe_first = abs2(c1[ctr_N+1]) * (1 - exp(-imag(κ) * (Δd + Σd)))
 	return 1
+	# return probe_first
 	# return clamp(1.0 - (probe_first + probe_zeroth 
 	# 				 ), 0.0, 1.0)
 	# return clamp(abs2(c1[ctr_N+1]) - probe_first , 0.0, 1.0)
@@ -264,7 +270,8 @@ end
 
 # ╔═╡ 790ec63a-fe17-4cbb-9dff-3c7e608ae3b6
 function sinusoidal_grating_FC(d1::Number,d3::Number)
-	κ_grating = π/21 + im*0.004
+	κ_grating = π/21 + im*0.008 #amy turner
+
 	h = 50
 	c1 = sinusoidal(κ_grating, h, d1;
 							 phase_shift=false, mode_block = true)
@@ -280,6 +287,8 @@ function fisher_diff_basis(d1s::T, d3s::T,
 	
 	κr_sample = π/21
 	Δds = collect(0:1:42)
+	# Δds = collect(-21:1:21)
+
 	λs = Vector{Float64}(undef, length(Δds))
 	int_values = Matrix{Float64}(undef, length(d1s), length(d3s))
 
@@ -290,11 +299,12 @@ function fisher_diff_basis(d1s::T, d3s::T,
 			c3, c1 = sinusoidal_grating_FC(d1, d3)
 	
 			for (i, Δd) in enumerate(Δds)
-				local tmp = fisher_info(c3, c1, (Δd, zero(Δd[1])),  
+				local tmp = fisher_info(c3, c1, (Δd, 1),  
 										κr_sample + im*κi_sample, noise_ratio)
 				local λ = tmp.values
-				# λs[i] = 1/λ[2] #λ_cov = 1/λ_I
-				λs[i] = λ[2] #λ_cov = 1/λ_I
+				# λs[i] = 1/λ[2]  #λ_cov = 1/λ_I
+				# λs[i] = λ[2] #λ_cov = 1/λ_I
+				λs[i] = λ[2] + λ[1] #λ_cov = 1/λ_I
 				λs[i] *= sample_damage(c3, c1, (Δd, zero(Δd[1])),
 									   κr_sample + im*κi_sample)
 			end
@@ -303,7 +313,7 @@ function fisher_diff_basis(d1s::T, d3s::T,
 		end
 	end
 	
-	return argmin(int_values), int_values
+	return argmax(int_values), int_values
 end
 
 # ╔═╡ 0cd04057-fd54-4b81-b722-6667d27bc10f
@@ -318,7 +328,7 @@ end
 # ╔═╡ 318653fc-09ae-4ed8-99bf-b8e04c5daf72
 heatmap( Σds,Δds, sample_damages,
 	   xlabel="Σds", 
-	   ylabel = "Δds")
+	   ylabel = "Δds");
 
 # ╔═╡ b731daed-b7bb-42c0-ac50-b731b0992489
 heatmap(Σds,Δds, output[:,:,2],
@@ -351,7 +361,7 @@ begin
 	Δϕ1s_mills = π/21 .* d1s
 	d3s = collect(1:1:50)
 	Δϕ3s_mills = π/21 .* d3s
-	idx_min, int_values = fisher_diff_basis(d1s,d3s, 0.001, 0.1
+	idx_min, int_values = fisher_diff_basis(d1s,d3s, 0.008, 0.01
 										   )
 	nothing
 end
@@ -431,7 +441,7 @@ function visibility_DC(d1s::T, d3s::T,
 			for (i,ℓ) in enumerate(Ls)
 			
 				ν_values[i,j,k] = ν_ℓ(ℓ, c3, c1, (0.0, 0.0), 
-									κr_sample + im*κi_sample)
+									κr_sample + im*κi_sample, noise_ratio)
 				DC_values[i,j,k] = DC_ℓ(ℓ, c3, c1, (0.0, 0.0),
 									  κr_sample + im*κi_sample)
 				noise_factor[i,j,k] = clamp(inv( 1 +
@@ -451,9 +461,9 @@ end
 
 # ╔═╡ 78746064-cd71-47ff-931d-124614fdc958
 begin
-	ν_vals, DC_vals, noise_factor = visibility_DC(d1s,d3s, 0.001, 0.5)
+	ν_vals, DC_vals, noise_factor = visibility_DC(d1s,d3s, 0.001, 0.1)
 	fig_ν = heatmap(Δϕ3s_mills, Δϕ1s_mills, ν_vals[ctr_L+ℓ_slider,:,:])
-	fig_DC = heatmap(Δϕ3s_mills, Δϕ1s_mills, noise_factor[ctr_L+ℓ_slider,:,:])
+	fig_DC = heatmap(Δϕ3s_mills, Δϕ1s_mills, DC_vals[ctr_L+ℓ_slider,:,:])
 	plot(fig_ν, fig_DC, layout=(1,2), size=(800,400))
 end
 
@@ -461,9 +471,10 @@ end
 begin
 weighted_sum = zero(ν_vals[1,:,:])
 for ℓ in Ls
-	weighted_sum += ν_vals[ctr_L .+ ℓ,:,:] .*
-		DC_vals[ctr_L .+ ℓ,:,:] .+ 0.1
+	weighted_sum += ν_vals[ctr_L .+ ℓ,:,:].^2 .*
+		DC_vals[ctr_L .+ ℓ,:,:] 
 end
+println(argmax(weighted_sum), idx_min)
 
 heatmap(Δϕ3s_mills, Δϕ1s_mills, weighted_sum,
 		xticks = (x_ticks, x_labels), yticks = (x_ticks, x_labels)
@@ -486,6 +497,7 @@ plot_point /π*21
 # ╔═╡ e27c931e-2aa6-467d-a24d-d681ee28aa90
 function image_intensity(d1,d3, Δds, Σd)
 	c3, c1 = sinusoidal_grating_FC(d1,d3)
+	# c3[ctr_N+1] *= cis(-π/2)
 	mat_intensity = Matrix{Float64}(undef, length(Δds), length(Ls))
 	mat_fisher = Matrix{Float64}(undef, length(Δds), length(Ls))
 	local κ_sample = π/21 + im*0.001
@@ -497,14 +509,14 @@ function image_intensity(d1,d3, Δds, Σd)
 		) for ℓ in Ls]
 	end
 	
-	return mat_intensity, mat_fisher, sum(mat_intensity, dims=2)
+	return mat_intensity, mat_fisher, sum(mat_intensity, dims=2), c3,c1
 end
 
 # ╔═╡ 930f993f-1857-4860-8f72-afdb3a50501b
 begin
 	Δds_intensity = collect(0:1:42)
 	Δϕs_intensity = Δds_intensity.*π/21
-	ψ_intensity, fisher_Ls ,energies= image_intensity(21,19,Δds_intensity ,0.0)
+	ψ_intensity, fisher_Ls ,energies, c3,c1= image_intensity(17,17,Δds_intensity ,0.0)
 	
 	fig1_int = heatmap(Ls, Δϕs_intensity, ψ_intensity,
 	   xticks = (Ls,Ls),
@@ -520,6 +532,10 @@ begin
 	
 	# plot(energies)
 end
+
+# ╔═╡ 2eaf149a-2e96-4e1f-b3a7-fe63203e68ce
+bar(Ns,angle.(c1),
+   xticks=(Ns,Ns))
 
 # ╔═╡ b56fa0bb-0422-4aa5-98d5-ed00fb612212
 size(ψ_intensity)
@@ -614,14 +630,12 @@ plot(Energies, Interaction_Parameter.(Energies),
 begin
 	σU = π/21 #units of rad/nm @ 80 keV
 	σ_turner = Interaction_Parameter(80.0) # units rad/(keV Angstroms)
+	println(σ_turner)
 	U_mip_Si3N4 = σU / 10 /σ_turner #units in keV
 	U_mip_H20 = 0.00448 #units in keV
 	println(U_mip_Si3N4)
 	println(U_mip_H20/U_mip_Si3N4)
 end
-
-# ╔═╡ 93c1f41e-0f88-43c5-a481-42bbf34c56bf
-
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -1799,7 +1813,7 @@ version = "1.9.2+0"
 # ╔═╡ Cell order:
 # ╠═adde1656-ea66-11f0-1c0b-878a196f6229
 # ╟─7d215201-bafa-48b3-8ddb-4f2a2438af87
-# ╟─1ee321a9-418a-4197-8573-d20b481f3131
+# ╠═1ee321a9-418a-4197-8573-d20b481f3131
 # ╠═3ef652c3-a1c1-42d6-94b7-f2afcbc4481f
 # ╠═0b03da0a-d927-4c19-b80a-ead52b005e99
 # ╟─707a4259-b80f-43c1-88cf-9374df16bdfc
@@ -1836,6 +1850,7 @@ version = "1.9.2+0"
 # ╠═fedc1b73-87a7-43d0-a08b-a94bbdfcfd4a
 # ╠═e27c931e-2aa6-467d-a24d-d681ee28aa90
 # ╠═930f993f-1857-4860-8f72-afdb3a50501b
+# ╠═2eaf149a-2e96-4e1f-b3a7-fe63203e68ce
 # ╠═b56fa0bb-0422-4aa5-98d5-ed00fb612212
 # ╠═29f21154-4b58-4026-9ec0-f5f8b934772e
 # ╠═c1700cea-5d9c-41fb-bd74-ee295bcab582
@@ -1847,6 +1862,5 @@ version = "1.9.2+0"
 # ╠═a4c7310f-fe66-43bf-b8a3-909b5dbeeadd
 # ╠═d168961c-a98c-4c02-a615-d1929cec437d
 # ╠═d6de813b-c644-4206-bc2e-b58b8c89a446
-# ╠═93c1f41e-0f88-43c5-a481-42bbf34c56bf
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
