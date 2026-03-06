@@ -1,0 +1,5 @@
+Filename:misalignments.ipynb, The following figures were created using two sinusoidal gratings 15nm & 23nm @80kev with 
+
+    p = 32, disk scale = 8, and magnifications = 0.8, 1.0, 1.2, 1.4. 
+
+    The predicted maximum rotational offset is 8.962689463289509, 17.543666239387406, 16.085011450581366, 7.240728881450077°.
